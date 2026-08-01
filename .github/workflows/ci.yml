@@ -16,9 +16,11 @@ jobs:
         with:
           fetch-depth: 0   # MinVer needs the full history to find the nearest tag
 
+      # Must satisfy global.json's SDK pin. The SDK version is independent of the
+      # target frameworks - the 10.0 SDK builds net472 and net8.0-windows.
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Restore
         run: dotnet restore Hpgl.Rendering.sln
