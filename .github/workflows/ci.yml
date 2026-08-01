@@ -41,13 +41,45 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Restore
-        run: dotnet restore Hpgl.Rendering.sln
+        run: |
+          dotnet restore Hpgl.Rendering.sln
+          dotnet tool restore
 
       - name: Build
         run: dotnet build Hpgl.Rendering.sln -c Release --no-restore
 
-      - name: Test (both target frameworks)
-        run: dotnet test Hpgl.Rendering.sln -c Release --no-build --verbosity normal
+      - name: Test (both target frameworks, with coverage)
+        run: >
+          dotnet test Hpgl.Rendering.sln -c Release --no-build --verbosity normal
+          --collect:"XPlat Code Coverage" --settings coverage.runsettings
+
+      # Merges the per-TFM Cobertura reports into one. Both TFMs run the same source
+      # through different runtimes, so the merged number is the honest measure of what
+      # the suite reaches.
+      - name: Merge coverage reports
+        run: >
+          dotnet reportgenerator
+          "-reports:tests/**/coverage.cobertura.xml"
+          "-targetdir:artifacts/coverage"
+          "-reporttypes:Html;Cobertura;TextSummary;MarkdownSummaryGithub"
+
+      - name: Coverage summary
+        if: always()
+        shell: pwsh
+        run: Get-Content artifacts/coverage/SummaryGithub.md | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+      # Thresholds live in the script, so lowering one is a reviewable commit rather
+      # than a number quietly drifting down.
+      - name: Coverage gate
+        shell: pwsh
+        run: ./eng/Check-Coverage.ps1
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage
+          path: artifacts/coverage
 
       # Proves the package still builds and its metadata validates, on every push -
       # so a packaging break is caught here rather than at release time.

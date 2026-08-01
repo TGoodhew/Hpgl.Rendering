@@ -176,6 +176,32 @@ captures: an HP 8563E plot with its golden render, a real PCL print dump, and
 `feature-exercise.plt`, a hand-authored plot that drives every supported instruction and
 makes a good visual sanity check.
 
+### Coverage
+
+CI measures coverage on every push and pull request and fails below the thresholds in
+[`eng/Check-Coverage.ps1`](eng/Check-Coverage.ps1) — currently **90 % line, 79 % branch**,
+against a measured 90.6 % / 80.0 %. Lowering a threshold means editing that file, so it
+shows up in review instead of drifting.
+
+To reproduce the CI number locally:
+
+```
+dotnet tool restore
+dotnet test Hpgl.Rendering.sln -c Release --collect:"XPlat Code Coverage" --settings coverage.runsettings
+dotnet reportgenerator "-reports:tests/**/coverage.cobertura.xml" "-targetdir:artifacts/coverage" "-reporttypes:Html;Cobertura;TextSummary"
+pwsh eng/Check-Coverage.ps1
+```
+
+Then open `artifacts/coverage/index.html`. CI publishes that same HTML as a build
+artifact named `coverage`, and writes the summary table into the run's job summary.
+
+The gate runs against the **merged** report. Both target frameworks execute the same
+source through different runtimes, so a line covered on one is covered by the suite;
+gating each separately would demand redundant tests to satisfy an artefact of
+multi-targeting. `StrokeFont.cs` is excluded — it is generated glyph data rather than
+logic, and its correctness is asserted behaviourally by the font-metrics and
+label-rendering tests.
+
 Versions come from git tags via [MinVer](https://github.com/adamralph/minver): tag `v1.2.3`
 and the package builds as `1.2.3`. Untagged builds are `0.0.0-alpha.0.N`.
 
