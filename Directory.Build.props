@@ -5,7 +5,12 @@
 <Project>
 
   <PropertyGroup>
-    <LangVersion>7.3</LangVersion>
+    <!-- C# 7.3 was the SDK's default for net472, not a requirement of it: the modern
+         compiler supports current language versions against net472 too, and only a
+         handful of features need runtime support this library does not use. `latest`
+         is deterministic here because global.json pins the SDK, so the language
+         version cannot move without a deliberate SDK change. -->
+    <LangVersion>latest</LangVersion>
     <Authors>Tony Goodhew</Authors>
     <Company>Tony Goodhew</Company>
     <Copyright>Copyright (c) 2026 Tony Goodhew</Copyright>
