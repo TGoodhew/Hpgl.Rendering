@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    # A stock hosted runner is enough: this library has no NI-VISA / GPIB dependency.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # MinVer needs the full history to find the nearest tag
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore Hpgl.Rendering.sln
+
+      - name: Build
+        run: dotnet build Hpgl.Rendering.sln -c Release --no-restore
+
+      - name: Test (both target frameworks)
+        run: dotnet test Hpgl.Rendering.sln -c Release --no-build --verbosity normal
+
+      # Proves the package still builds and its metadata validates, on every push -
+      # so a packaging break is caught here rather than at release time.
+      - name: Pack
+        run: dotnet pack src/Hpgl.Rendering/Hpgl.Rendering.csproj -c Release --no-build -o artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nupkg
+          path: artifacts/*

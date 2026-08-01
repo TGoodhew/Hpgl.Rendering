@@ -1,0 +1,29 @@
+<!--
+  Shared build + package metadata for every project in this repository.
+  Per-project settings (PackageId, Description, tags) live in the project file.
+-->
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>7.3</LangVersion>
+    <Authors>Tony Goodhew</Authors>
+    <Company>Tony Goodhew</Company>
+    <Copyright>Copyright (c) 2026 Tony Goodhew</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/TGoodhew/Hpgl.Rendering</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/TGoodhew/Hpgl.Rendering</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+  <!-- Source Link: consumers can step into this library in the debugger, and the
+       symbols published alongside the package resolve to the exact commit. -->
+  <PropertyGroup>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,1540 @@
+// -----------------------------------------------------------------------------
+// Hpgl.Rendering - HP-GL/2 vector-to-bitmap renderer (.NET Framework 4.7.2).
+//
+// The HP-GL plotter-emulation capture-and-render technique that motivates this
+// library is derived from the HP7470A Plotter Emulator (7470.cpp) by John Miles,
+// KE5FX. Original C++ author: John Miles (KE5FX) - http://www.ke5fx.com/
+// This independent C# adaptation carries no warranty from KE5FX.
+//
+// This is a clean, general HP-GL/2 vector renderer. Unlike 7470.cpp it contains
+// no per-instrument fix-ups; instrument-specific quirks belong in the caller's
+// capture profile, not here. Covered so far (issue #8): IN/DF, IP/SC, RO, IW
+// (soft-clip), SP, PU/PD/PA/PR, arcs/circles/wedges (CI/AA/AR/EW) and edge
+// rectangles (EA/ER) via chord subdivision, line types (LT) as dash patterns,
+// area fill (RA/RR/WG, FT/PT) - solid via polygon fill, hatch as line spans -
+// 7550A polygons (PM/EP/FP) with even-odd multi-contour fill, ticks (TL/XT/YT),
+// user-defined fill (UF), HP-GL/2 encoded polylines (PE), and the full label/text
+// subsystem (LB/DT/SI/SR/SL/DI/DR/CP/ES/SM, CR/LF, mirroring, CS/CA/SS/SA +
+// shift-in/out) drawn from a built-in single-stroke vector font. Device-control
+// escapes and live-bus status/output commands (OA/OE/DC/…) are parsed and ignored:
+// they return data over GPIB and produce no geometry, so they are not a renderer's job.
+// -----------------------------------------------------------------------------
+
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.IO;
+using System.Text;
+
+namespace Hpgl.Rendering
+{
+    /// <summary>Renders HP-GL/2 vector text to a raster (<see cref="Bitmap"/> or PNG bytes).</summary>
+    public static class HpglRenderer
+    {
+        /// <summary>Renders HP-GL/2 text to a <see cref="Bitmap"/>. Caller owns/disposes the bitmap.</summary>
+        public static Bitmap RenderToBitmap(string hpgl, HpglRenderOptions options = null)
+        {
+            options = options ?? new HpglRenderOptions();
+            var instructions = HpglParser.Parse(hpgl ?? string.Empty);
+
+            // Pass 1: measure the drawn extent so the transform can auto-fit it. Make the extent robust to
+            // a single corrupted coordinate so it can't collapse the whole plot (#52).
+            var measure = new MeasureSink();
+            Execute(instructions, measure);
+            measure.ApplyRobustExtent(out _);
+
+            var bmp = new Bitmap(options.Width, options.Height, PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.SmoothingMode = options.Antialias ? SmoothingMode.AntiAlias : SmoothingMode.None;
+                g.Clear(options.ResolveBackground());
+
+                if (measure.HasExtent)
+                {
+                    var transform = PlotTransform.Fit(measure, options);
+                    using (var draw = new GdiSink(g, transform, options))
+                        Execute(instructions, draw);
+                }
+            }
+            return bmp;
+        }
+
+        /// <summary>Renders HP-GL/2 text and encodes the result as a PNG byte array.</summary>
+        public static byte[] RenderToPng(string hpgl, HpglRenderOptions options = null)
+        {
+            using (var bmp = RenderToBitmap(hpgl, options))
+            using (var ms = new MemoryStream())
+            {
+                bmp.Save(ms, ImageFormat.Png);
+                return ms.ToArray();
+            }
+        }
+
+        /// <summary>Renders raw HP-GL/2 bytes (decoded as Latin-1) to PNG.</summary>
+        public static byte[] RenderToPng(byte[] hpglBytes, HpglRenderOptions options = null) =>
+            RenderToPng(DecodeLatin1(hpglBytes), options);
+
+        /// <summary>
+        /// Renders HP-GL/2 text to a self-contained SVG document (a string). The SVG uses the
+        /// same auto-fit transform and pen palette as the raster path, but stays vector and
+        /// compact (consecutive connected segments are merged into a single &lt;polyline&gt;).
+        /// This is the form that can be shown inline in a chat as an SVG artifact.
+        /// </summary>
+        public static string RenderToSvg(string hpgl, HpglRenderOptions options = null)
+        {
+            options = options ?? new HpglRenderOptions();
+            var instructions = HpglParser.Parse(hpgl ?? string.Empty);
+
+            var measure = new MeasureSink();
+            Execute(instructions, measure);
+            measure.ApplyRobustExtent(out _);   // robust to a single corrupted coordinate (#52)
+
+            var sb = new StringBuilder();
+            // Pure responsive root: a viewBox (the coordinate system) + preserveAspectRatio, and NO fixed
+            // pixel width/height and NO CSS. The SVG has no intrinsic size, so a viewer scales the whole
+            // viewBox to fit its container (e.g. an artifact panel) - there is no declared "1024" for it to
+            // resize/clip to at the end. (Avoid width="100%" with no height: that collapses to zero height.)
+            sb.Append("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 ")
+              .Append(options.Width).Append(' ').Append(options.Height)
+              .Append("\">\n");   // preserveAspectRatio defaults to "xMidYMid meet" - scale-to-fit, centered
+            sb.Append("<rect width=\"").Append(options.Width).Append("\" height=\"").Append(options.Height)
+              .Append("\" fill=\"").Append(SvgSink.ToHex(options.ResolveBackground())).Append("\"/>\n");
+
+            if (measure.HasExtent)
+            {
+                var transform = PlotTransform.Fit(measure, options);
+                var sink = new SvgSink(sb, transform, options);
+                Execute(instructions, sink);
+                sink.Flush();
+            }
+
+            sb.Append("</svg>");
+            return sb.ToString();
+        }
+
+        /// <summary>Renders raw HP-GL/2 bytes (decoded as Latin-1) to an SVG document string.</summary>
+        public static string RenderToSvg(byte[] hpglBytes, HpglRenderOptions options = null) =>
+            RenderToSvg(DecodeLatin1(hpglBytes), options);
+
+        private static string DecodeLatin1(byte[] bytes) =>
+            bytes == null ? string.Empty : Encoding.GetEncoding("ISO-8859-1").GetString(bytes);
+
+        /// <summary>
+        /// #52: returns true if this plot contains a coordinate so far outside the rest of the geometry
+        /// that it would otherwise dominate the auto-fit and collapse the image (a transient corrupted /
+        /// concatenated coordinate from the GPIB read). The renderer already ignores such points when
+        /// fitting; this lets the capture tool detect the glitch, retry the capture, and ultimately notify
+        /// the user. <paramref name="detail"/> carries the excluded value(s) for the log.
+        /// </summary>
+        public static bool HasCorruptCoordinate(string hpgl, out string detail)
+        {
+            var measure = new MeasureSink();
+            Execute(HpglParser.Parse(hpgl ?? string.Empty), measure);
+            return measure.ApplyRobustExtent(out detail);
+        }
+
+        /// <summary>
+        /// Typography diagnostic (#56): returns the distinct label characters / character sets in this
+        /// HP-GL that the renderer cannot draw faithfully - a printable code with no glyph in its active
+        /// set, or a non-zero (non-ASCII) character set we have no table for (so its text is drawn with the
+        /// ASCII fallback). Tracks CS/CA (designate), SS/SA and in-label shift-out/in (0x0E/0x0F) exactly as
+        /// the renderer does. Empty when everything renders correctly - so a capture self-reports the gap
+        /// before any alternate-set work is built out.
+        /// </summary>
+        public static IReadOnlyList<string> UnsupportedTypography(string hpgl)
+        {
+            var gaps = new SortedSet<string>(StringComparer.Ordinal);
+            int stdSet = 0, altSet = 0;
+            bool alt = false;
+            foreach (var ins in HpglParser.Parse(hpgl ?? string.Empty))
+            {
+                switch (ins.Mnemonic)
+                {
+                    case "IN":
+                    case "DF": stdSet = 0; altSet = 0; alt = false; break;
+                    case "CS": stdSet = ins.Parameters.Count > 0 ? (int)ins.Parameters[0] : 0; break;
+                    case "CA": altSet = ins.Parameters.Count > 0 ? (int)ins.Parameters[0] : 0; break;
+                    case "SS": alt = false; break;
+                    case "SA": alt = true; break;
+                    case "LB":
+                        bool localAlt = alt;
+                        foreach (char ch in ins.Text ?? string.Empty)
+                        {
+                            if (ch == '') { localAlt = true; continue; }   // shift-out -> alternate
+                            if (ch == '') { localAlt = false; continue; }  // shift-in  -> standard
+                            if (ch < ' ') continue;                              // CR/LF/other controls: not glyphs
+                            int set = localAlt ? altSet : stdSet;
+                            if (!StrokeFont.IsImplemented(set))
+                                gaps.Add("charset " + set + " (rendered as ASCII Set 0)");
+                            else if (StrokeFont.Get(ch, set) == null)
+                                gaps.Add("U+" + ((int)ch).ToString("X4") + " (no glyph)");
+                        }
+                        alt = localAlt;
+                        break;
+                }
+            }
+            return new List<string>(gaps);
+        }
+
+        // ---------------------------------------------------------------------
+        // Execution: replay the instruction list against a sink (measure or draw).
+        // Everything is funnelled through a ClipSink so the IW soft-clip window
+        // applies uniformly to vectors, fills, and label strokes.
+        // ---------------------------------------------------------------------
+
+        private static void Execute(IList<HpglInstruction> instructions, IPlotSink rawSink)
+        {
+            var state = new PlotterState();
+            var sink = new ClipSink(rawSink, state);
+            PolygonRecorder recorder = null;   // non-null while in polygon mode (PM0..PM2)
+            foreach (var instruction in instructions)
+            {
+                // While in polygon mode, geometry records into the buffer instead of drawing.
+                IPlotSink geom = recorder ?? (IPlotSink)sink;
+                switch (instruction.Mnemonic)
+                {
+                    case "IN":
+                    case "DF": state.Reset(); sink.SetLineType(HpglLineTypes.Solid); recorder = null; break;
+                    case "PM": recorder = PolygonMode(instruction.Parameters, state, recorder); break;
+                    case "EP": EdgePolygon(state, sink); break;
+                    case "FP": FillPolygonBuffer(state, sink); break;
+                    case "LT": sink.SetLineType(instruction.Parameters.Count > 0
+                                   ? (int)instruction.Parameters[0] : HpglLineTypes.Solid); break;
+                    case "SP": state.Pen = instruction.Parameters.Count > 0 ? (int)instruction.Parameters[0] : 0; break;
+                    case "PU": state.PenDown = false; Move(state, instruction.Parameters, geom); break;
+                    case "PD": state.PenDown = true; Move(state, instruction.Parameters, geom); break;
+                    case "PA": state.Absolute = true; Move(state, instruction.Parameters, geom); break;
+                    case "PR": state.Absolute = false; Move(state, instruction.Parameters, geom); break;
+                    case "SC": state.SetScale(instruction.Parameters); break;
+                    case "IP": state.SetInputPoints(instruction.Parameters); break;
+                    case "RO": state.SetRotation(instruction.Parameters); break;
+                    case "IW": state.SetWindow(instruction.Parameters); break;
+                    // ---- label / text subsystem ----
+                    case "SI": state.SetCharSizeCm(instruction.Parameters); break;
+                    case "SR": state.SetCharSizeRelative(instruction.Parameters); break;
+                    case "SL": state.SetSlant(instruction.Parameters); break;
+                    case "DI": state.SetDirection(instruction.Parameters); break;
+                    case "DR": state.SetDirectionRelative(instruction.Parameters); break;
+                    case "ES": state.SetExtraSpace(instruction.Parameters); break;
+                    case "CP": CharPlot(state, instruction.Parameters); break;
+                    case "CS": state.StandardSet = instruction.Parameters.Count > 0 ? (int)instruction.Parameters[0] : 0; break;
+                    case "CA": state.AlternateSet = instruction.Parameters.Count > 0 ? (int)instruction.Parameters[0] : 0; break;
+                    case "SS": state.ActiveAlternate = false; break;
+                    case "SA": state.ActiveAlternate = true; break;
+                    case "SM": state.SymbolChar = !string.IsNullOrEmpty(instruction.Text) ? instruction.Text[0] : -1; break;
+                    case "LB": DrawLabel(state, instruction.Text, sink); break;
+                    case "DT": break; // label terminator is resolved by the parser
+                    case "CT": if (instruction.Parameters.Count > 0) { /* chord mode (deg/dev) - degrees only */ } break;
+                    case "CI": Circle(state, instruction.Parameters, geom); break;
+                    case "AA": Arc(state, instruction.Parameters, geom, relativeCenter: false); break;
+                    case "AR": Arc(state, instruction.Parameters, geom, relativeCenter: true); break;
+                    case "EA": EdgeRect(state, instruction.Parameters, geom, relative: false); break;
+                    case "ER": EdgeRect(state, instruction.Parameters, geom, relative: true); break;
+                    case "EW": EdgeWedge(state, instruction.Parameters, geom); break;
+                    case "FT": state.SetFill(instruction.Parameters); break;
+                    case "PT": state.SetPenThickness(instruction.Parameters); break;
+                    case "RA": FillRect(state, instruction.Parameters, geom, relative: false); break;
+                    case "RR": FillRect(state, instruction.Parameters, geom, relative: true); break;
+                    case "WG": FillWedge(state, instruction.Parameters, geom); break;
+                    case "UF": state.SetUserFill(instruction.Parameters); break;
+                    // ---- ticks (TL/XT/YT) ----
+                    case "TL": state.SetTickLength(instruction.Parameters); break;
+                    case "XT": Tick(state, geom, vertical: true); break;
+                    case "YT": Tick(state, geom, vertical: false); break;
+                    // ---- HP-GL/2 encoded polyline ----
+                    case "PE": EncodedPolyline(state, instruction.Text, geom); break;
+                    // Everything else (OA/OC/OE/OS/… status-output, DC/DP digitize, VS/FS/AS/AP/CV pen
+                    // dynamics, PG/RP/WD/KY/GM page+memory, BL/PB/OL buffered labels, UC user chars) is
+                    // a live-bus / non-geometry concern - parsed and ignored so the stream still renders.
+                }
+            }
+        }
+
+        private static void Move(PlotterState state, IReadOnlyList<double> p, IPlotSink sink)
+        {
+            for (int k = 0; k + 1 < p.Count; k += 2)
+            {
+                double nx, ny;
+                state.NextPosition(p[k], p[k + 1], out nx, out ny);
+                // The first coordinate after a reset only establishes the pen position; never draw a line
+                // to it from the default origin - even if the pen is down. Some instruments (8720/8753)
+                // emit PD before their first PA, which would otherwise streak a line from (0,0) to the
+                // first trace point. Once a position is established, pen-down moves draw normally. (#55)
+                if (state.PenDown && state.PositionEstablished) sink.Line(state.X, state.Y, nx, ny, state.Pen);
+                state.X = nx;
+                state.Y = ny;
+                state.PositionEstablished = true;
+                if (state.SymbolChar >= 0) DrawSymbol(state, state.SymbolChar, nx, ny, sink);
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Label / symbol rendering. Glyphs come from the built-in single-stroke
+        // font (StrokeFont) and are emitted as Line() calls, so they honour size
+        // (SI/SR), slant (SL), direction (DI/DR), rotation (RO), clipping (IW),
+        // pen colour and line type exactly like every other vector.
+        // ---------------------------------------------------------------------
+
+        /// <summary>Resolves the rotated text baseline ("along") and perpendicular ("up") unit vectors.</summary>
+        private static void RotatedDir(PlotterState s, out double ax, out double ay, out double ux, out double uy)
+        {
+            double cx = s.DirCos, cy = s.DirSin;
+            s.RotateVector(ref cx, ref cy);
+            ax = cx; ay = cy; ux = -cy; uy = cx;
+        }
+
+        // CR/LF and shift-out/shift-in: a label containing any of these isn't a plain single-line run,
+        // so the low-fidelity <text> path declines it and the stroke font handles it instead.
+        private static readonly char[] LabelControlChars = { '\r', '\n', '', '' };
+
+        /// <summary>LB: draws a string from the current position, advancing the carry-over cursor.</summary>
+        private static void DrawLabel(PlotterState s, string text, IPlotSink sink)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            double ax, ay, ux, uy; RotatedDir(s, out ax, out ay, out ux, out uy);
+            double sx = s.CharWidthUnits / StrokeFont.Em;
+            double sy = s.CharHeightUnits / StrokeFont.Cap;
+            double ox = s.X, oy = s.Y, cursorX = 0, lineY = 0;
+            double adv = s.AdvanceXUnits, lineStep = s.LineAdvanceUnits;
+            bool activeAlt = s.ActiveAlternate;
+
+            // Low-fidelity SVG: render the whole label as one <text> element instead of dozens of font
+            // strokes - far smaller/faster to display inline (#23). Only for a plain horizontal, single-
+            // line label (no symbol mode, clip, shift-set, or embedded CR/LF); anything else falls through
+            // to the exact single-stroke font below. SVG-only; the raster path always uses the stroke font.
+            if (sink.TextLabels && !s.HasClip && s.SymbolChar < 0
+                && Math.Abs(ay) < 1e-6 && ax > 0.999 && text.IndexOfAny(LabelControlChars) < 0)
+            {
+                sink.DrawText(ox, oy, text, s.CharHeightUnits, s.Pen);
+                double w = text.Length * adv;
+                s.X = ox + w * ax; s.Y = oy + w * ay;
+                return;
+            }
+
+            foreach (char ch in text)
+            {
+                if (ch == '\r') { cursorX = 0; continue; }              // CR -> line origin
+                if (ch == '\n') { cursorX = 0; lineY -= lineStep; continue; } // LF -> next line
+                if (ch == '') { activeAlt = true; continue; }   // shift-out -> alternate set
+                if (ch == '') { activeAlt = false; continue; }  // shift-in  -> standard set
+
+                // Resolve the active character set (CS/CA designate, SS/SA + shift select). Only Set 0
+                // (ASCII) has a table today; other sets fall back to it - the typography analyzer reports
+                // when that happens so a capture self-reports the gap (#56).
+                int[][] glyph = StrokeFont.Get(ch, activeAlt ? s.AlternateSet : s.StandardSet);
+                if (glyph != null)
+                {
+                    foreach (var stroke in glyph)
+                        for (int k = 0; k + 3 < stroke.Length; k += 2)
+                        {
+                            double l0x = stroke[k] * sx + s.SlantTan * (stroke[k + 1] * sy) + cursorX;
+                            double l0y = stroke[k + 1] * sy + lineY;
+                            double l1x = stroke[k + 2] * sx + s.SlantTan * (stroke[k + 3] * sy) + cursorX;
+                            double l1y = stroke[k + 3] * sy + lineY;
+                            sink.Line(ox + l0x * ax + l0y * ux, oy + l0x * ay + l0y * uy,
+                                      ox + l1x * ax + l1y * ux, oy + l1x * ay + l1y * uy, s.Pen);
+                        }
+                }
+                cursorX += adv;
+            }
+            // Carry-over cursor: the pen ends at the position following the last character.
+            s.X = ox + cursorX * ax + lineY * ux;
+            s.Y = oy + cursorX * ay + lineY * uy;
+            s.ActiveAlternate = activeAlt;
+        }
+
+        /// <summary>SM: draws the symbol glyph centred on a plotted point (no cursor advance).</summary>
+        private static void DrawSymbol(PlotterState s, int chCode, double px, double py, IPlotSink sink)
+        {
+            int[][] glyph = StrokeFont.Get((char)chCode, s.StandardSet);
+            if (glyph == null) return;
+            double ax, ay, ux, uy; RotatedDir(s, out ax, out ay, out ux, out uy);
+            double sx = s.CharWidthUnits / StrokeFont.Em;
+            double sy = s.CharHeightUnits / StrokeFont.Cap;
+            const double cgx = 3, cgy = 3; // approximate glyph centre in grid units (Em/2, Cap/2)
+
+            foreach (var stroke in glyph)
+                for (int k = 0; k + 3 < stroke.Length; k += 2)
+                {
+                    double l0x = (stroke[k] - cgx) * sx + s.SlantTan * ((stroke[k + 1] - cgy) * sy);
+                    double l0y = (stroke[k + 1] - cgy) * sy;
+                    double l1x = (stroke[k + 2] - cgx) * sx + s.SlantTan * ((stroke[k + 3] - cgy) * sy);
+                    double l1y = (stroke[k + 3] - cgy) * sy;
+                    sink.Line(px + l0x * ax + l0y * ux, py + l0x * ay + l0y * uy,
+                              px + l1x * ax + l1y * ux, py + l1x * ay + l1y * uy, s.Pen);
+                }
+        }
+
+        /// <summary>CP spaces,lines: moves the cursor by N character cells without drawing (CP; = CR+LF).</summary>
+        private static void CharPlot(PlotterState s, IReadOnlyList<double> p)
+        {
+            double ax, ay, ux, uy; RotatedDir(s, out ax, out ay, out ux, out uy);
+            double dCols, dLines;
+            if (p.Count >= 2) { dCols = p[0]; dLines = p[1]; }
+            else { dCols = 0; dLines = -1; } // CP; -> down one line
+            double dx = dCols * s.AdvanceXUnits, dy = dLines * s.LineAdvanceUnits;
+            s.X += dx * ax + dy * ux;
+            s.Y += dx * ay + dy * uy;
+        }
+
+        // ---------------------------------------------------------------------
+        // Curves & rectangles. These draw regardless of pen up/down (HP-GL treats
+        // them as draw commands) and decompose into the same Line sink as vectors,
+        // so both the measure and draw passes see them with no sink changes.
+        // ---------------------------------------------------------------------
+
+        private const double DegToRad = Math.PI / 180.0;
+
+        /// <summary>CI radius[,chord]: circle centred on the current position; pen position unchanged.</summary>
+        private static void Circle(PlotterState s, IReadOnlyList<double> p, IPlotSink sink)
+        {
+            if (p.Count < 1) return;
+            double r = Math.Abs(p[0]);
+            double chord = p.Count >= 2 ? p[1] : s.ChordAngleDeg;
+            double ex, ey;
+            EmitArc(sink, s.X, s.Y, r * s.ScaleX, r * s.ScaleY, 0, 360, chord, s.Pen, out ex, out ey);
+        }
+
+        /// <summary>AA/AR X,Y,sweep[,chord]: arc about the (abs/rel) centre from the current position.</summary>
+        private static void Arc(PlotterState s, IReadOnlyList<double> p, IPlotSink sink, bool relativeCenter)
+        {
+            if (p.Count < 3) return;
+            double cx, cy;
+            if (relativeCenter) { double dx, dy; s.DeltaToPlot(p[0], p[1], out dx, out dy); cx = s.X + dx; cy = s.Y + dy; }
+            else s.UserToPlot(p[0], p[1], out cx, out cy);
+
+            double sweep = p[2];
+            double chord = p.Count >= 4 ? p[3] : s.ChordAngleDeg;
+            double vx = s.X - cx, vy = s.Y - cy;
+            double r = Math.Sqrt(vx * vx + vy * vy);
+            double startDeg = Math.Atan2(vy, vx) / DegToRad;
+
+            double ex, ey;
+            EmitArc(sink, cx, cy, r, r, startDeg, sweep, chord, s.Pen, out ex, out ey);
+            s.X = ex; s.Y = ey; // the pen ends at the arc endpoint
+        }
+
+        /// <summary>EA/ER X,Y: rectangle between the current position and the (abs/rel) opposite corner.</summary>
+        private static void EdgeRect(PlotterState s, IReadOnlyList<double> p, IPlotSink sink, bool relative)
+        {
+            if (p.Count < 2) return;
+            double x2, y2;
+            if (relative) { double dx, dy; s.DeltaToPlot(p[0], p[1], out dx, out dy); x2 = s.X + dx; y2 = s.Y + dy; }
+            else s.UserToPlot(p[0], p[1], out x2, out y2);
+
+            double x1 = s.X, y1 = s.Y;
+            sink.Line(x1, y1, x2, y1, s.Pen);
+            sink.Line(x2, y1, x2, y2, s.Pen);
+            sink.Line(x2, y2, x1, y2, s.Pen);
+            sink.Line(x1, y2, x1, y1, s.Pen);
+            // pen position unchanged
+        }
+
+        /// <summary>EW radius,start,sweep[,chord]: wedge outline (two radii + arc) about the current position.</summary>
+        private static void EdgeWedge(PlotterState s, IReadOnlyList<double> p, IPlotSink sink)
+        {
+            if (p.Count < 3) return;
+            double r = Math.Abs(p[0]);
+            double startDeg = p[1] + s.RotationDeg, sweep = p[2];
+            double chord = p.Count >= 4 ? p[3] : s.ChordAngleDeg;
+            double rx = r * s.ScaleX, ry = r * s.ScaleY;
+            double cx = s.X, cy = s.Y;
+
+            double ax = cx + rx * Math.Cos(startDeg * DegToRad), ay = cy + ry * Math.Sin(startDeg * DegToRad);
+            sink.Line(cx, cy, ax, ay, s.Pen);            // centre -> arc start
+            double ex, ey;
+            EmitArc(sink, cx, cy, rx, ry, startDeg, sweep, chord, s.Pen, out ex, out ey);
+            sink.Line(ex, ey, cx, cy, s.Pen);            // arc end -> centre
+            // pen position unchanged (returns to centre)
+        }
+
+        /// <summary>
+        /// Subdivides an arc/ellipse into chords and emits them as <see cref="IPlotSink.Line"/> calls.
+        /// Steps by <paramref name="chordDeg"/> (HP-GL default 5°); reports the final point in
+        /// <paramref name="endX"/>/<paramref name="endY"/>. rx/ry differ only under non-uniform SC scaling.
+        /// </summary>
+        private static void EmitArc(IPlotSink sink, double cx, double cy, double rx, double ry,
+            double startDeg, double sweepDeg, double chordDeg, int pen, out double endX, out double endY)
+        {
+            chordDeg = Math.Abs(chordDeg);
+            if (chordDeg < 0.1) chordDeg = 5.0;
+            int steps = Math.Max(1, (int)Math.Ceiling(Math.Abs(sweepDeg) / chordDeg));
+
+            double prevX = cx + rx * Math.Cos(startDeg * DegToRad);
+            double prevY = cy + ry * Math.Sin(startDeg * DegToRad);
+            for (int k = 1; k <= steps; k++)
+            {
+                double a = (startDeg + sweepDeg * k / steps) * DegToRad;
+                double x = cx + rx * Math.Cos(a);
+                double y = cy + ry * Math.Sin(a);
+                sink.Line(prevX, prevY, x, y, pen);
+                prevX = x; prevY = y;
+            }
+            endX = prevX; endY = prevY;
+        }
+
+        // ---------------------------------------------------------------------
+        // Area fill (FT/PT, RA/RR, WG). Solid fills (FT 1/2) use the sink's native
+        // polygon fill (a valid raster/SVG preview shortcut per the spec); hatch
+        // fills (FT 3 parallel, 4 cross-hatch) are generated as Line spans by a
+        // scanline pass so they keep the characteristic plotted-hatch look.
+        // ---------------------------------------------------------------------
+
+        /// <summary>RA/RR X,Y: fill the rectangle between the current position and the (abs/rel) corner.</summary>
+        private static void FillRect(PlotterState s, IReadOnlyList<double> p, IPlotSink sink, bool relative)
+        {
+            if (p.Count < 2) return;
+            double x2, y2;
+            if (relative) { double dx, dy; s.DeltaToPlot(p[0], p[1], out dx, out dy); x2 = s.X + dx; y2 = s.Y + dy; }
+            else s.UserToPlot(p[0], p[1], out x2, out y2);
+            double x1 = s.X, y1 = s.Y;
+            var rect = new[] { new PointD(x1, y1), new PointD(x2, y1), new PointD(x2, y2), new PointD(x1, y2) };
+            FillContours(s, sink, new[] { rect });
+            // pen position unchanged
+        }
+
+        /// <summary>WG radius,start,sweep[,chord]: fill a pie wedge about the current position.</summary>
+        private static void FillWedge(PlotterState s, IReadOnlyList<double> p, IPlotSink sink)
+        {
+            if (p.Count < 3) return;
+            double r = Math.Abs(p[0]), startDeg = p[1] + s.RotationDeg, sweep = p[2];
+            double chord = p.Count >= 4 ? p[3] : s.ChordAngleDeg;
+            double rx = r * s.ScaleX, ry = r * s.ScaleY;
+            double cx = s.X, cy = s.Y;
+
+            int steps = Math.Max(1, (int)Math.Ceiling(Math.Abs(sweep) / Math.Max(0.1, Math.Abs(chord))));
+            var pts = new List<PointD> { new PointD(cx, cy) };
+            for (int k = 0; k <= steps; k++)
+            {
+                double a = (startDeg + sweep * k / steps) * DegToRad;
+                pts.Add(new PointD(cx + rx * Math.Cos(a), cy + ry * Math.Sin(a)));
+            }
+            FillContours(s, sink, new[] { pts.ToArray() });
+            // pen position unchanged (centre)
+        }
+
+        // ---- 7550A polygons (PM / EP / FP) ----------------------------------
+
+        /// <summary>PM n: 0 = enter/clear the buffer, 1 = close sub-contour, 2 = exit (finalize onto state).</summary>
+        private static PolygonRecorder PolygonMode(IReadOnlyList<double> p, PlotterState s, PolygonRecorder rec)
+        {
+            int mode = p.Count > 0 ? (int)p[0] : 0;
+            if (mode == 0) return new PolygonRecorder();          // begin a fresh polygon buffer
+            if (mode == 1) { rec?.Break(); return rec ?? new PolygonRecorder(); }
+            if (rec != null) s.Polygon = rec.Finish();            // mode 2: finalize and exit
+            return null;
+        }
+
+        /// <summary>EP: stroke the stored polygon outline (every sub-contour).</summary>
+        private static void EdgePolygon(PlotterState s, IPlotSink sink)
+        {
+            if (s.Polygon == null) return;
+            foreach (var c in s.Polygon)
+                for (int i = 0; i + 1 < c.Length; i++)
+                    sink.Line(c[i].X, c[i].Y, c[i + 1].X, c[i + 1].Y, s.Pen);
+        }
+
+        /// <summary>FP: fill the stored polygon with the current fill type (even-odd across sub-contours).</summary>
+        private static void FillPolygonBuffer(PlotterState s, IPlotSink sink)
+        {
+            if (s.Polygon != null) FillContours(s, sink, s.Polygon);
+        }
+
+        /// <summary>
+        /// Fills one or more closed contours per the current fill type: solid (FT 1/2) via the sink's
+        /// native polygon fill; hatch (FT 3 parallel, 4 cross-hatch) as Line spans. Multiple contours
+        /// are filled even-odd together (so 7550A polygons with holes hatch correctly).
+        /// </summary>
+        private static void FillContours(PlotterState s, IPlotSink sink, IReadOnlyList<PointD[]> contours)
+        {
+            if (contours.Count == 0) return;
+            if (s.FillType == 3 || s.FillType == 4)
+            {
+                double spacing = s.FillSpacingUnits > 0 ? s.FillSpacingUnits : 0.01 * s.FrameDiagonal;
+                if (spacing <= 0) spacing = 1;
+                EmitHatch(sink, contours, s.FillAngleDeg, spacing, s.Pen, s.UserFillGaps);
+                if (s.FillType == 4) EmitHatch(sink, contours, s.FillAngleDeg + 90, spacing, s.Pen, s.UserFillGaps);
+            }
+            else
+            {
+                foreach (var c in contours)
+                {
+                    if (c.Length < 3) continue;
+                    var xs = new double[c.Length]; var ys = new double[c.Length];
+                    for (int i = 0; i < c.Length; i++) { xs[i] = c[i].X; ys[i] = c[i].Y; }
+                    sink.FillPolygon(xs, ys, s.Pen); // FT 1/2 (and shading) -> solid (holes not subtracted)
+                }
+            }
+        }
+
+        /// <summary>
+        /// Scanline hatch over one or more contours: parallel fill lines at <paramref name="angleDeg"/>
+        /// spaced by <paramref name="spacing"/>, clipped to the contours (even-odd across all of them),
+        /// emitted as Line spans. Rotates into a frame where hatch lines are horizontal, scans, rotates back.
+        /// </summary>
+        private static void EmitHatch(IPlotSink sink, IReadOnlyList<PointD[]> contours,
+            double angleDeg, double spacing, int pen, double[] gaps = null)
+        {
+            if (spacing <= 0) return;
+            double ca = Math.Cos(-angleDeg * DegToRad), sa = Math.Sin(-angleDeg * DegToRad);
+
+            var rot = new List<PointD[]>(contours.Count);
+            double minY = double.MaxValue, maxY = double.MinValue;
+            foreach (var c in contours)
+            {
+                if (c.Length < 3) continue;
+                var rc = new PointD[c.Length];
+                for (int i = 0; i < c.Length; i++)
+                {
+                    double ry = c[i].X * sa + c[i].Y * ca;
+                    rc[i] = new PointD(c[i].X * ca - c[i].Y * sa, ry);
+                    if (ry < minY) minY = ry;
+                    if (ry > maxY) maxY = ry;
+                }
+                rot.Add(rc);
+            }
+            if (rot.Count == 0) return;
+
+            double back = angleDeg * DegToRad;
+            double cb = Math.Cos(back), sb = Math.Sin(back);
+            bool variable = gaps != null && gaps.Length > 0;
+            var crossings = new List<double>();
+            int guard = 0, gi = 0;
+            for (double yy = minY + spacing / 2.0; yy < maxY && guard < 200000;
+                 yy += (variable ? gaps[gi++ % gaps.Length] : spacing), guard++)
+            {
+                crossings.Clear();
+                foreach (var rc in rot)
+                {
+                    int n = rc.Length;
+                    for (int i = 0; i < n; i++)
+                    {
+                        int j = (i + 1) % n;
+                        double y0 = rc[i].Y, y1 = rc[j].Y;
+                        if ((y0 <= yy && y1 > yy) || (y1 <= yy && y0 > yy))
+                        {
+                            double tt = (yy - y0) / (y1 - y0);
+                            crossings.Add(rc[i].X + tt * (rc[j].X - rc[i].X));
+                        }
+                    }
+                }
+                crossings.Sort();
+                for (int k = 0; k + 1 < crossings.Count; k += 2)
+                {
+                    double xa = crossings[k], xb = crossings[k + 1];
+                    sink.Line(xa * cb - yy * sb, xa * sb + yy * cb,
+                              xb * cb - yy * sb, xb * sb + yy * cb, pen);
+                }
+            }
+        }
+
+        // ---- ticks (TL/XT/YT) -----------------------------------------------
+
+        /// <summary>
+        /// XT/YT: draw a tick at the current position. XT (vertical) extends along Y by the tick
+        /// fractions of the frame height; YT (horizontal) along X by the frame width. Honours RO.
+        /// </summary>
+        private static void Tick(PlotterState s, IPlotSink sink, bool vertical)
+        {
+            double range = vertical ? s.FrameHeight : s.FrameWidth;
+            double pos = s.TickPosFrac * range, neg = s.TickNegFrac * range;
+            double dxP = vertical ? 0 : pos, dyP = vertical ? pos : 0;
+            double dxN = vertical ? 0 : -neg, dyN = vertical ? -neg : 0;
+            s.RotateVector(ref dxP, ref dyP);
+            s.RotateVector(ref dxN, ref dyN);
+            sink.Line(s.X + dxN, s.Y + dyN, s.X + dxP, s.Y + dyP, s.Pen);
+        }
+
+        // ---- HP-GL/2 encoded polyline (PE) ----------------------------------
+
+        /// <summary>
+        /// PE: decode an HP-GL/2 encoded polyline (relative, base-64 by default) into pen moves.
+        /// Handles the flag chars: '7' (7-bit/base-32), '&lt;' (pen-up next), '=' (absolute next),
+        /// '&gt;' (fractional bits), ':' (select pen). Optional - emitted by HP-GL/2 instruments newer
+        /// than the 7475A/7550A; older captures never contain it.
+        /// </summary>
+        private static void EncodedPolyline(PlotterState s, string payload, IPlotSink sink)
+        {
+            if (string.IsNullOrEmpty(payload)) return;
+            int i = 0, n = payload.Length;
+            int bits = 6;            // base-64 (8-bit) default; '7' switches to base-32 (5-bit)
+            double frac = 1;         // '>' sets a fractional divisor
+            bool penUp = false, absNext = false;
+
+            while (i < n)
+            {
+                char c = payload[i];
+                if (c == '7') { bits = 5; i++; continue; }
+                if (c == '<') { penUp = true; i++; continue; }
+                if (c == '=') { absNext = true; i++; continue; }
+                if (c == '>') { i++; double fb; if (ReadPeValue(payload, ref i, bits, out fb)) frac = Math.Pow(2, fb); continue; }
+                if (c == ':') { i++; double pen; if (ReadPeValue(payload, ref i, bits, out pen)) s.Pen = (int)pen; continue; }
+                if (c < '?') { i++; continue; } // not a data char (e.g. stray separator)
+
+                double dx, dy;
+                if (!ReadPeValue(payload, ref i, bits, out dx)) break;
+                if (!ReadPeValue(payload, ref i, bits, out dy)) break;
+                dx /= frac; dy /= frac;
+
+                double nx = absNext ? dx : s.X + dx;
+                double ny = absNext ? dy : s.Y + dy;
+                if (!penUp) sink.Line(s.X, s.Y, nx, ny, s.Pen);
+                s.X = nx; s.Y = ny;
+                penUp = false; absNext = false;
+            }
+        }
+
+        /// <summary>Reads one PE-encoded value (zig-zag signed, little-endian base-2^bits, terminal char carries the high digit).</summary>
+        private static bool ReadPeValue(string text, ref int i, int bits, out double value)
+        {
+            value = 0;
+            long acc = 0; int shift = 0; int baseN = 1 << bits;
+            while (i < text.Length)
+            {
+                char ch = text[i];
+                if (ch < '?') return false;       // not a data character
+                i++;
+                int d = ch - 63;
+                if (d >= baseN)                   // terminal character
+                {
+                    acc += (long)(d - baseN) << shift;
+                    value = (acc & 1) != 0 ? -(acc >> 1) : (acc >> 1);
+                    return true;
+                }
+                acc += (long)d << shift;
+                shift += bits;
+            }
+            return false;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Plotter state machine. Coordinates are tracked in "plot units"; SC user
+    // scaling (if present) maps user coordinates into a fixed plot-unit frame,
+    // and RO rotates the emitted plot-unit coordinates. The final auto-fit
+    // transform normalizes whatever range results.
+    // -------------------------------------------------------------------------
+
+    /// <summary>A point in plot-unit space.</summary>
+    internal struct PointD
+    {
+        public double X, Y;
+        public PointD(double x, double y) { X = x; Y = y; }
+    }
+
+    internal sealed class PlotterState
+    {
+        /// <summary>The finalized 7550A polygon buffer (PM2), one entry per sub-contour. Null when none.</summary>
+        public List<PointD[]> Polygon;
+
+        // Default P1/P2 (input-point) frame. A real HP 7475A/7550A defaults P1/P2 to the hard-clip
+        // corners of the paper, which is NON-SQUARE (landscape ~10000 x 7200, ratio ~1.39) - NOT a
+        // square frame. The aspect matters: under SC, scaleX/scaleY = (P2x-P1x)/(P2y-P1y), so a square
+        // user range (e.g. SC 0,500,0,500) yields ELLIPSES on real hardware, and seeds SR char size,
+        // ticks (TL/XT/YT) and the default hatch spacing. (#28)
+        private const double DefP2X = 10000, DefP2Y = 7200;
+        private double _ipX1 = 0, _ipY1 = 0, _ipX2 = DefP2X, _ipY2 = DefP2Y;
+        private double _scXmin, _scXmax, _scYmin, _scYmax;
+        private bool _scaled;
+
+        public double X, Y;
+        public bool PenDown;
+        // Set once any coordinate has been visited since the last reset. Until then a pen-down move only
+        // positions the pen (no line), so a leading PD before the first PA can't streak from the origin.
+        public bool PositionEstablished;
+        public bool Absolute = true;
+        public int Pen = 1;
+
+        // Coordinate-system rotation (RO): 0/90/180/270 degrees, applied about the origin.
+        public int RotationDeg;
+
+        // Soft-clip window (IW), in plot units (already rotated); null window when !HasClip.
+        public bool HasClip;
+        public double ClipX1, ClipY1, ClipX2, ClipY2;
+
+        // Character/label state. Width/height are signed (negative = mirrored).
+        public double CharWidthUnits = 150;
+        public double CharHeightUnits = 150;
+        public double SlantTan;
+        public double ExtraSpaceX, ExtraSpaceY;
+        public double DirCos = 1, DirSin = 0;
+        public int StandardSet, AlternateSet;
+        public bool ActiveAlternate;
+        public int SymbolChar = -1;          // -1 = symbol mode off
+        public double ChordAngleDeg = 5.0;   // arc/circle subdivision step (HP-GL default 5°)
+
+        // Area-fill state (FT/PT). Type 1/2 = solid, 3 = parallel hatch, 4 = cross-hatch.
+        public int FillType = 1;
+        public double FillSpacingUnits = 0;  // 0 => default (1% of the P1-P2 diagonal)
+        public double FillAngleDeg = 0;
+        public double PenThicknessMm = 0.3;
+        public double[] UserFillGaps;        // UF gap sequence (plot units) for variable-spacing hatch
+
+        // Tick length (TL): positive/negative tick as a fraction of the P1-P2 range (default 0.5%).
+        public double TickPosFrac = 0.005;
+        public double TickNegFrac = 0.005;
+
+        public void Reset()
+        {
+            _scaled = false;
+            PositionEstablished = false;   // IN/DF: the next coordinate only positions the pen (no leading streak)
+            Absolute = true;
+            RotationDeg = 0;
+            HasClip = false;
+            CharWidthUnits = 150; CharHeightUnits = 150;
+            SlantTan = 0; ExtraSpaceX = 0; ExtraSpaceY = 0;
+            DirCos = 1; DirSin = 0;
+            StandardSet = 0; AlternateSet = 0; ActiveAlternate = false;
+            SymbolChar = -1;
+            ChordAngleDeg = 5.0;
+            FillType = 1; FillSpacingUnits = 0; FillAngleDeg = 0; PenThicknessMm = 0.3;
+            UserFillGaps = null;
+            TickPosFrac = 0.005; TickNegFrac = 0.005;
+            _ipX1 = 0; _ipY1 = 0; _ipX2 = DefP2X; _ipY2 = DefP2Y; // IN/DF restore default P1/P2
+            Polygon = null;
+        }
+
+        /// <summary>TL tp[,tn]: tick lengths as a percentage of the P1-P2 range (default 0.5%).</summary>
+        public void SetTickLength(IReadOnlyList<double> p)
+        {
+            if (p.Count == 0) { TickPosFrac = TickNegFrac = 0.005; return; }
+            TickPosFrac = p[0] / 100.0;
+            TickNegFrac = p.Count >= 2 ? p[1] / 100.0 : p[0] / 100.0;
+        }
+
+        /// <summary>UF gap1[,gap2…]: custom hatch gap sequence (current units) used by fill; UF; clears it.</summary>
+        public void SetUserFill(IReadOnlyList<double> p)
+        {
+            if (p.Count == 0) { UserFillGaps = null; return; }
+            double s = Math.Max(ScaleX, ScaleY);
+            var gaps = new List<double>();
+            foreach (var g in p) if (g > 0) gaps.Add(g * s);
+            UserFillGaps = gaps.Count > 0 ? gaps.ToArray() : null;
+        }
+
+        /// <summary>Diagonal of the P1-P2 (IP) frame in plot units - the basis for default hatch spacing.</summary>
+        public double FrameDiagonal =>
+            Math.Sqrt((_ipX2 - _ipX1) * (_ipX2 - _ipX1) + (_ipY2 - _ipY1) * (_ipY2 - _ipY1));
+
+        public double FrameWidth => Math.Abs(_ipX2 - _ipX1);
+        public double FrameHeight => Math.Abs(_ipY2 - _ipY1);
+
+        /// <summary>Per-character cursor advance (plot units), including ES extra space; signed for mirroring.
+        /// The fixed cell is <see cref="StrokeFont.Advance"/> grid units wide while the character width
+        /// maps to the glyph em (<see cref="StrokeFont.Em"/>), so the pitch is Advance/Em (1.5x) the
+        /// character width - giving uniform monospaced cells like real HP plotters / KE5FX.</summary>
+        public double AdvanceXUnits =>
+            CharWidthUnits * StrokeFont.Advance / StrokeFont.Em * (1 + ExtraSpaceX);
+
+        /// <summary>Per-line advance (plot units): one cell height (= 2x char height) plus ES extra line space.</summary>
+        public double LineAdvanceUnits => 2 * Math.Abs(CharHeightUnits) * (1 + ExtraSpaceY);
+
+        public void SetFill(IReadOnlyList<double> p)
+        {
+            if (p.Count == 0) { FillType = 1; FillSpacingUnits = 0; FillAngleDeg = 0; return; }
+            FillType = (int)p[0];
+            FillSpacingUnits = p.Count >= 2 ? Math.Abs(p[1]) * Math.Max(ScaleX, ScaleY) : 0;
+            FillAngleDeg = p.Count >= 3 ? p[2] : 0;
+        }
+
+        public void SetPenThickness(IReadOnlyList<double> p)
+        {
+            if (p.Count >= 1 && p[0] > 0) PenThicknessMm = p[0];
+        }
+
+        /// <summary>Plot-units per user-unit on each axis (1 when scaling is off). Non-uniform under SC.</summary>
+        public double ScaleX => _scaled ? (_ipX2 - _ipX1) / (_scXmax - _scXmin) : 1.0;
+        public double ScaleY => _scaled ? (_ipY2 - _ipY1) / (_scYmax - _scYmin) : 1.0;
+
+        /// <summary>Maps a user/plotter coordinate pair to plot units (honours SC scaling and RO rotation).</summary>
+        public void UserToPlot(double ux, double uy, out double px, out double py)
+        {
+            double x = UserToPlotX(ux), y = UserToPlotY(uy);
+            RotateVector(ref x, ref y);
+            px = x; py = y;
+        }
+
+        /// <summary>Maps a relative coordinate delta to plot units (honours SC scaling and RO rotation).</summary>
+        public void DeltaToPlot(double dx, double dy, out double px, out double py)
+        {
+            double x = DeltaToPlotX(dx), y = DeltaToPlotY(dy);
+            RotateVector(ref x, ref y);
+            px = x; py = y;
+        }
+
+        /// <summary>Rotates a plot-unit vector/point about the origin by the current RO angle.</summary>
+        public void RotateVector(ref double x, ref double y)
+        {
+            switch (RotationDeg)
+            {
+                case 90: { double t = x; x = -y; y = t; break; }
+                case 180: { x = -x; y = -y; break; }
+                case 270: { double t = x; x = y; y = -t; break; }
+            }
+        }
+
+        public void SetInputPoints(IReadOnlyList<double> p)
+        {
+            if (p.Count >= 4) { _ipX1 = p[0]; _ipY1 = p[1]; _ipX2 = p[2]; _ipY2 = p[3]; }
+        }
+
+        public void SetScale(IReadOnlyList<double> p)
+        {
+            if (p.Count >= 4)
+            {
+                _scXmin = p[0]; _scXmax = p[1]; _scYmin = p[2]; _scYmax = p[3];
+                _scaled = _scXmax != _scXmin && _scYmax != _scYmin;
+            }
+            else
+            {
+                _scaled = false; // SC; with no args turns scaling off
+            }
+        }
+
+        public void SetRotation(IReadOnlyList<double> p)
+        {
+            int deg = p.Count > 0 ? (int)Math.Round(p[0] / 90.0) * 90 : 0;
+            RotationDeg = ((deg % 360) + 360) % 360;
+        }
+
+        /// <summary>IW X1,Y1,X2,Y2: set the soft-clip window (user coords). IW; resets it.</summary>
+        public void SetWindow(IReadOnlyList<double> p)
+        {
+            if (p.Count < 4) { HasClip = false; return; }
+            double ax, ay, bx, by;
+            UserToPlot(p[0], p[1], out ax, out ay);
+            UserToPlot(p[2], p[3], out bx, out by);
+            ClipX1 = Math.Min(ax, bx); ClipX2 = Math.Max(ax, bx);
+            ClipY1 = Math.Min(ay, by); ClipY2 = Math.Max(ay, by);
+            HasClip = true;
+        }
+
+        /// <summary>Computes the next plot-unit position for an absolute/relative coordinate pair.</summary>
+        public void NextPosition(double a, double b, out double nx, out double ny)
+        {
+            if (Absolute)
+            {
+                UserToPlot(a, b, out nx, out ny);
+            }
+            else
+            {
+                double dx, dy;
+                DeltaToPlot(a, b, out dx, out dy);
+                nx = X + dx; ny = Y + dy;
+            }
+        }
+
+        private double UserToPlotX(double ux) =>
+            _scaled ? _ipX1 + (ux - _scXmin) * (_ipX2 - _ipX1) / (_scXmax - _scXmin) : ux;
+
+        private double UserToPlotY(double uy) =>
+            _scaled ? _ipY1 + (uy - _scYmin) * (_ipY2 - _ipY1) / (_scYmax - _scYmin) : uy;
+
+        private double DeltaToPlotX(double dx) =>
+            _scaled ? dx * (_ipX2 - _ipX1) / (_scXmax - _scXmin) : dx;
+
+        private double DeltaToPlotY(double dy) =>
+            _scaled ? dy * (_ipY2 - _ipY1) / (_scYmax - _scYmin) : dy;
+
+        public void SetCharSizeCm(IReadOnlyList<double> p)
+        {
+            // SI width,height in centimetres; 1 plot unit = 0.025 mm => 400 units/cm. Sign = mirror.
+            if (p.Count >= 2) { CharWidthUnits = p[0] * 400.0; CharHeightUnits = p[1] * 400.0; }
+            else { CharWidthUnits = 150; CharHeightUnits = 150; } // SI; -> size default
+        }
+
+        public void SetCharSizeRelative(IReadOnlyList<double> p)
+        {
+            // SR width,height as a percentage of the IP frame. SR; -> 0.75% x 1.5%.
+            if (p.Count >= 2) { CharWidthUnits = p[0] / 100.0 * FrameWidth; CharHeightUnits = p[1] / 100.0 * FrameHeight; }
+            else { CharWidthUnits = 0.0075 * FrameWidth; CharHeightUnits = 0.015 * FrameHeight; }
+        }
+
+        public void SetSlant(IReadOnlyList<double> p) => SlantTan = p.Count >= 1 ? p[0] : 0;
+
+        public void SetExtraSpace(IReadOnlyList<double> p)
+        {
+            ExtraSpaceX = p.Count >= 1 ? p[0] : 0;
+            ExtraSpaceY = p.Count >= 2 ? p[1] : 0;
+        }
+
+        public void SetDirection(IReadOnlyList<double> p)
+        {
+            if (p.Count >= 2) Normalize(p[0], p[1]);
+            else { DirCos = 1; DirSin = 0; }
+        }
+
+        public void SetDirectionRelative(IReadOnlyList<double> p)
+        {
+            // DR run,rise are fractions of the P1-P2 frame; scale before normalizing.
+            if (p.Count >= 2) Normalize(p[0] * FrameWidth, p[1] * FrameHeight);
+            else { DirCos = 1; DirSin = 0; }
+        }
+
+        private void Normalize(double run, double rise)
+        {
+            double mag = Math.Sqrt(run * run + rise * rise);
+            if (mag > 0) { DirCos = run / mag; DirSin = rise / mag; }
+            else { DirCos = 1; DirSin = 0; }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Sinks: pass 1 measures the extent; pass 2 draws with the fitted transform.
+    // -------------------------------------------------------------------------
+
+    internal interface IPlotSink
+    {
+        void Line(double x1, double y1, double x2, double y2, int pen);
+        /// <summary>Sets the current line type for subsequent vectors (-1 = solid; 0-6 = HP-GL patterns).</summary>
+        void SetLineType(int lineType);
+        /// <summary>Solid-fills a closed polygon (plot-unit vertices) - used for FT type 1/2 fills.</summary>
+        void FillPolygon(IReadOnlyList<double> xs, IReadOnlyList<double> ys, int pen);
+        /// <summary>True if this sink renders labels as &lt;text&gt; (low-fidelity) rather than stroking them.</summary>
+        bool TextLabels { get; }
+        /// <summary>Draws a horizontal label as text at its baseline origin (only called when TextLabels).</summary>
+        void DrawText(double ox, double oy, string text, double capUnits, int pen);
+    }
+
+    /// <summary>
+    /// Applies the IW soft-clip window to everything drawn: line segments are clipped with
+    /// Liang-Barsky and filled polygons with Sutherland-Hodgman, against the current window read
+    /// live from <see cref="PlotterState"/> (so a mid-stream IW change takes effect immediately).
+    /// Pass-through when no window is set.
+    /// </summary>
+    internal sealed class ClipSink : IPlotSink
+    {
+        private readonly IPlotSink _inner;
+        private readonly PlotterState _s;
+
+        public ClipSink(IPlotSink inner, PlotterState s) { _inner = inner; _s = s; }
+
+        public void SetLineType(int lineType) => _inner.SetLineType(lineType);
+        public bool TextLabels => _inner.TextLabels;
+        public void DrawText(double ox, double oy, string text, double capUnits, int pen)
+            => _inner.DrawText(ox, oy, text, capUnits, pen);   // text is only emitted when no clip is active
+
+        public void Line(double x1, double y1, double x2, double y2, int pen)
+        {
+            if (!_s.HasClip) { _inner.Line(x1, y1, x2, y2, pen); return; }
+            if (ClipSegment(ref x1, ref y1, ref x2, ref y2))
+                _inner.Line(x1, y1, x2, y2, pen);
+        }
+
+        public void FillPolygon(IReadOnlyList<double> xs, IReadOnlyList<double> ys, int pen)
+        {
+            if (!_s.HasClip) { _inner.FillPolygon(xs, ys, pen); return; }
+            var clipped = ClipPolygon(xs, ys);
+            if (clipped.Count >= 3)
+            {
+                var cx = new double[clipped.Count]; var cy = new double[clipped.Count];
+                for (int i = 0; i < clipped.Count; i++) { cx[i] = clipped[i].X; cy[i] = clipped[i].Y; }
+                _inner.FillPolygon(cx, cy, pen);
+            }
+        }
+
+        /// <summary>Liang-Barsky clip of a segment to the window; returns false if fully outside.</summary>
+        private bool ClipSegment(ref double x0, ref double y0, ref double x1, ref double y1)
+        {
+            double dx = x1 - x0, dy = y1 - y0;
+            double t0 = 0, t1 = 1;
+            double[] p = { -dx, dx, -dy, dy };
+            double[] q = { x0 - _s.ClipX1, _s.ClipX2 - x0, y0 - _s.ClipY1, _s.ClipY2 - y0 };
+            for (int i = 0; i < 4; i++)
+            {
+                if (p[i] == 0) { if (q[i] < 0) return false; }
+                else
+                {
+                    double t = q[i] / p[i];
+                    if (p[i] < 0) { if (t > t1) return false; if (t > t0) t0 = t; }
+                    else { if (t < t0) return false; if (t < t1) t1 = t; }
+                }
+            }
+            double nx0 = x0 + t0 * dx, ny0 = y0 + t0 * dy;
+            double nx1 = x0 + t1 * dx, ny1 = y0 + t1 * dy;
+            x0 = nx0; y0 = ny0; x1 = nx1; y1 = ny1;
+            return true;
+        }
+
+        /// <summary>Sutherland-Hodgman clip of a polygon to the rectangular window.</summary>
+        private List<PointD> ClipPolygon(IReadOnlyList<double> xs, IReadOnlyList<double> ys)
+        {
+            var poly = new List<PointD>(xs.Count);
+            for (int i = 0; i < xs.Count; i++) poly.Add(new PointD(xs[i], ys[i]));
+            poly = ClipEdge(poly, 0, _s.ClipX1);   // left:   x >= X1
+            poly = ClipEdge(poly, 1, _s.ClipX2);   // right:  x <= X2
+            poly = ClipEdge(poly, 2, _s.ClipY1);   // bottom: y >= Y1
+            poly = ClipEdge(poly, 3, _s.ClipY2);   // top:    y <= Y2
+            return poly;
+        }
+
+        private static bool Inside(PointD pt, int edge, double v)
+        {
+            switch (edge)
+            {
+                case 0: return pt.X >= v;
+                case 1: return pt.X <= v;
+                case 2: return pt.Y >= v;
+                default: return pt.Y <= v;
+            }
+        }
+
+        private static PointD Intersect(PointD a, PointD b, int edge, double v)
+        {
+            double t;
+            if (edge <= 1) t = (v - a.X) / (b.X - a.X);
+            else t = (v - a.Y) / (b.Y - a.Y);
+            return new PointD(a.X + t * (b.X - a.X), a.Y + t * (b.Y - a.Y));
+        }
+
+        private static List<PointD> ClipEdge(List<PointD> input, int edge, double v)
+        {
+            var output = new List<PointD>();
+            if (input.Count == 0) return output;
+            for (int i = 0; i < input.Count; i++)
+            {
+                PointD cur = input[i], prev = input[(i + input.Count - 1) % input.Count];
+                bool curIn = Inside(cur, edge, v), prevIn = Inside(prev, edge, v);
+                if (curIn)
+                {
+                    if (!prevIn) output.Add(Intersect(prev, cur, edge, v));
+                    output.Add(cur);
+                }
+                else if (prevIn)
+                {
+                    output.Add(Intersect(prev, cur, edge, v));
+                }
+            }
+            return output;
+        }
+    }
+
+    /// <summary>
+    /// HP-GL line-type (LT) patterns rendered as dash arrays. Each pattern is a sequence of
+    /// on/off run lengths; the full repeat is scaled to a fraction of the canvas diagonal (HP-GL
+    /// default 4% of the P1-P2 diagonal), so dashes look right at any output size.
+    /// </summary>
+    internal static class HpglLineTypes
+    {
+        // Sentinel distinct from every real line type (-6..6); negative reals are adaptive variants.
+        public const int Solid = int.MinValue;
+        public const double DefaultLengthFraction = 0.04;
+
+        // Relative on/off run lengths per LT (LT0 ≈ dots; LT1-6 dashes/dash-dots).
+        private static readonly Dictionary<int, double[]> Patterns = new Dictionary<int, double[]>
+        {
+            [0] = new[] { 0.5, 2.0 },
+            [1] = new[] { 1.0, 2.0 },
+            [2] = new[] { 3.0, 3.0 },
+            [3] = new[] { 6.0, 3.0 },
+            [4] = new[] { 6.0, 3.0, 1.0, 3.0 },
+            [5] = new[] { 6.0, 3.0, 1.0, 3.0, 1.0, 3.0 },
+            [6] = new[] { 3.0, 3.0, 1.0, 3.0 },
+        };
+
+        /// <summary>Returns the scaled dash run-lengths (pixels) for a line type, or null for solid.</summary>
+        public static float[] DashArray(int lineType, double canvasDiagonalPx)
+        {
+            if (lineType == Solid) return null;
+            double[] pat;
+            if (!Patterns.TryGetValue(Math.Abs(lineType), out pat)) return null; // solid / unknown
+            double sum = 0; foreach (var v in pat) sum += v;
+            double unit = DefaultLengthFraction * canvasDiagonalPx / sum;
+            var arr = new float[pat.Length];
+            for (int i = 0; i < pat.Length; i++) arr[i] = (float)Math.Max(0.5, pat[i] * unit);
+            return arr;
+        }
+    }
+
+    /// <summary>
+    /// Captures geometry as polygon contours while in 7550A polygon mode (PM0..PM2). It is an
+    /// <see cref="IPlotSink"/>, so the existing Move/arc/rectangle helpers record into it unchanged:
+    /// each <see cref="Line"/> appends to the current contour, and a discontinuity (the segment does
+    /// not start where the last ended - e.g. after a pen-up move) begins a new contour. <see cref="Break"/>
+    /// forces a new contour for PM1.
+    /// </summary>
+    internal sealed class PolygonRecorder : IPlotSink
+    {
+        public readonly List<List<PointD>> Contours = new List<List<PointD>>();
+        private List<PointD> _cur;
+        private bool _break = true;
+        private double _lx, _ly;
+        private bool _have;
+
+        public void Line(double x1, double y1, double x2, double y2, int pen)
+        {
+            if (_break || !_have || x1 != _lx || y1 != _ly)
+            {
+                _cur = new List<PointD> { new PointD(x1, y1) };
+                Contours.Add(_cur);
+                _break = false;
+            }
+            _cur.Add(new PointD(x2, y2));
+            _lx = x2; _ly = y2; _have = true;
+        }
+
+        /// <summary>Ends the current contour so the next vector starts a fresh one (PM1).</summary>
+        public void Break() { _break = true; _have = false; }
+
+        /// <summary>The finalized buffer: contours with at least an edge, as arrays.</summary>
+        public List<PointD[]> Finish()
+        {
+            var result = new List<PointD[]>();
+            foreach (var c in Contours)
+                if (c.Count >= 2) result.Add(c.ToArray());
+            return result;
+        }
+
+        public void SetLineType(int lineType) { }
+        public void FillPolygon(IReadOnlyList<double> xs, IReadOnlyList<double> ys, int pen) { }
+        public bool TextLabels => false;
+        public void DrawText(double ox, double oy, string text, double capUnits, int pen) { }
+    }
+
+    internal sealed class MeasureSink : IPlotSink
+    {
+        public double MinX = double.MaxValue, MinY = double.MaxValue;
+        public double MaxX = double.MinValue, MaxY = double.MinValue;
+        public bool HasExtent => MaxX >= MinX && MaxY >= MinY;
+
+        // Every visited coordinate, kept so the extent can be made robust to a single corrupted value (#52).
+        private readonly List<double> _xs = new List<double>();
+        private readonly List<double> _ys = new List<double>();
+
+        public void Line(double x1, double y1, double x2, double y2, int pen)
+        {
+            Include(x1, y1); Include(x2, y2);
+        }
+
+        public void SetLineType(int lineType) { /* line style does not affect extent */ }
+        public bool TextLabels => false;   // measure pass strokes labels so their extent is included in auto-fit
+        public void DrawText(double ox, double oy, string text, double capUnits, int pen) { }
+
+        public void FillPolygon(IReadOnlyList<double> xs, IReadOnlyList<double> ys, int pen)
+        {
+            for (int i = 0; i < xs.Count; i++) Include(xs[i], ys[i]);
+        }
+
+        private void Include(double x, double y)
+        {
+            if (x < MinX) MinX = x;
+            if (y < MinY) MinY = y;
+            if (x > MaxX) MaxX = x;
+            if (y > MaxY) MaxY = y;
+            _xs.Add(x); _ys.Add(y);
+        }
+
+        /// <summary>
+        /// #52: clamp the extent so one corrupted coordinate (a transient GPIB digit run-on, e.g. a value
+        /// 30x the plotter frame) can't blow up the auto-fit and collapse the whole plot to a line. Peels
+        /// values that sit a large gap (> K x the data span) beyond the rest of the data, on either axis.
+        /// Returns true (with a human-readable detail) if any outlier was excluded; otherwise leaves the
+        /// extent untouched, so a clean plot is unaffected. The outlier geometry is still drawn (it simply
+        /// falls off-canvas), but it no longer dominates the fit.
+        /// </summary>
+        public bool ApplyRobustExtent(out string detail)
+        {
+            detail = null;
+            bool x = ClampAxis(_xs, ref MinX, ref MaxX, "X", ref detail);
+            bool y = ClampAxis(_ys, ref MinY, ref MaxY, "Y", ref detail);
+            return x | y;
+        }
+
+        private static bool ClampAxis(List<double> vals, ref double lo, ref double hi, string axis, ref string detail)
+        {
+            int n = vals.Count;
+            if (n < 8) return false;                 // too few points to tell signal from glitch
+            var s = new List<double>(vals); s.Sort();
+            const double K = 3.0;                    // an outlier sits > 3x the data span beyond the rest
+            int maxPeel = n / 4;                     // never discard more than a quarter of the points
+            int loIdx = 0, hiIdx = n - 1;
+            for (int p = 0; hiIdx > loIdx && p < maxPeel; p++)
+            {
+                double rMin = s[loIdx], rMax = s[hiIdx - 1], span = rMax - rMin;
+                if (span > 0 && s[hiIdx] > rMax + K * span) hiIdx--; else break;
+            }
+            for (int p = 0; loIdx < hiIdx && p < maxPeel; p++)
+            {
+                double rMin = s[loIdx + 1], rMax = s[hiIdx], span = rMax - rMin;
+                if (span > 0 && s[loIdx] < rMin - K * span) loIdx++; else break;
+            }
+            bool any = false;
+            if (hiIdx < n - 1) { detail = Append(detail, axis + " max " + Fmt(hi) + " (excluded; kept " + Fmt(s[hiIdx]) + ")"); hi = s[hiIdx]; any = true; }
+            if (loIdx > 0)     { detail = Append(detail, axis + " min " + Fmt(lo) + " (excluded; kept " + Fmt(s[loIdx]) + ")"); lo = s[loIdx]; any = true; }
+            return any;
+        }
+
+        private static string Append(string d, string m) => string.IsNullOrEmpty(d) ? m : d + "; " + m;
+        private static string Fmt(double v) => v.ToString("0", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    internal sealed class PlotTransform
+    {
+        private readonly double _scale, _srcMinX, _srcMinY, _offX, _offY;
+        private readonly int _height;
+
+        public double Scale => _scale;
+
+        private PlotTransform(double scale, double srcMinX, double srcMinY, double offX, double offY, int height)
+        {
+            _scale = scale; _srcMinX = srcMinX; _srcMinY = srcMinY; _offX = offX; _offY = offY; _height = height;
+        }
+
+        public static PlotTransform Fit(MeasureSink extent, HpglRenderOptions opt)
+        {
+            double w = Math.Max(1, extent.MaxX - extent.MinX);
+            double h = Math.Max(1, extent.MaxY - extent.MinY);
+            double availW = Math.Max(1, opt.Width - 2 * opt.Margin);
+            double availH = Math.Max(1, opt.Height - 2 * opt.Margin);
+            double scale = Math.Min(availW / w, availH / h);
+
+            double offX = opt.Margin + (availW - w * scale) / 2.0;
+            double offY = opt.Margin + (availH - h * scale) / 2.0;
+            return new PlotTransform(scale, extent.MinX, extent.MinY, offX, offY, opt.Height);
+        }
+
+        public float MapX(double x) => (float)(_offX + (x - _srcMinX) * _scale);
+
+        // HP-GL Y increases upward; raster Y increases downward, so flip.
+        public float MapY(double y) => (float)(_height - (_offY + (y - _srcMinY) * _scale));
+    }
+
+    internal sealed class GdiSink : IPlotSink, IDisposable
+    {
+        private readonly Graphics _g;
+        private readonly PlotTransform _t;
+        private readonly HpglRenderOptions _opt;
+        private readonly Dictionary<int, Pen> _pens = new Dictionary<int, Pen>();
+        private readonly double _diag;
+        private int _lineType = HpglLineTypes.Solid;
+
+        public GdiSink(Graphics g, PlotTransform t, HpglRenderOptions opt)
+        {
+            _g = g; _t = t; _opt = opt;
+            _diag = Math.Sqrt((double)opt.Width * opt.Width + (double)opt.Height * opt.Height);
+        }
+
+        public void SetLineType(int lineType) { _lineType = lineType; }
+        public bool TextLabels => false;   // raster always uses the exact single-stroke font
+        public void DrawText(double ox, double oy, string text, double capUnits, int pen) { }
+
+        public void Line(double x1, double y1, double x2, double y2, int pen)
+        {
+            _g.DrawLine(PenFor(pen), _t.MapX(x1), _t.MapY(y1), _t.MapX(x2), _t.MapY(y2));
+        }
+
+        public void FillPolygon(IReadOnlyList<double> xs, IReadOnlyList<double> ys, int pen)
+        {
+            if (xs.Count < 3) return;
+            var pts = new PointF[xs.Count];
+            for (int i = 0; i < xs.Count; i++) pts[i] = new PointF(_t.MapX(xs[i]), _t.MapY(ys[i]));
+            using (var brush = new SolidBrush(_opt.ResolvePen(pen)))
+                _g.FillPolygon(brush, pts);
+        }
+
+        private Pen PenFor(int pen)
+        {
+            Pen p;
+            if (!_pens.TryGetValue(pen, out p))
+            {
+                p = new Pen(_opt.ResolvePen(pen), _opt.LineWidthPx > 0 ? _opt.LineWidthPx : 1f);
+                _pens[pen] = p;
+            }
+            // Apply the current line type. (Cached pen mutated per draw - safe single-threaded.)
+            float[] dash = HpglLineTypes.DashArray(_lineType, _diag);
+            if (dash == null) p.DashStyle = DashStyle.Solid;
+            else p.DashPattern = dash;
+            return p;
+        }
+
+        public void Dispose()
+        {
+            foreach (var p in _pens.Values) p.Dispose();
+            _pens.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Emits SVG for the fitted plot, optimised so the model can re-emit it as an artifact quickly
+    /// (issue #23): ALL strokes that share a pen + line type are batched into ONE &lt;path&gt; element
+    /// (disjoint runs as "M" subpaths) so the per-element wrapper - over half the document otherwise -
+    /// is not repeated per stroke. Long runs (e.g. a spectrum trace) are Ramer-Douglas-Peucker-
+    /// simplified at a sub-pixel tolerance; short runs (font glyphs, graticule, circles, arcs) are kept
+    /// byte-exact. Coordinates are whole pixels. None of this touches the raster (PNG) path.
+    /// </summary>
+    internal sealed class SvgSink : IPlotSink
+    {
+        private readonly StringBuilder _sb;
+        private readonly PlotTransform _t;
+        private readonly HpglRenderOptions _opt;
+
+        private readonly StringBuilder _pathData = new StringBuilder();   // coalesced subpaths for the current pen group
+        private readonly List<int> _runX = new List<int>();              // the current connected run, accumulated for RDP
+        private readonly List<int> _runY = new List<int>();
+        private readonly double _diag;
+        private readonly double _simplifyPx;
+        private int _pen = int.MinValue;
+        private int _lineType = HpglLineTypes.Solid;
+        private int _runLineType = HpglLineTypes.Solid;
+        private int _lastX, _lastY;
+        private bool _open;
+
+        // Only runs longer than this are RDP-simplified, so a spectrum trace shrinks while font glyphs,
+        // graticule, circles and arcs stay byte-exact (and their structural tests are unaffected).
+        private const int SimplifyMinPoints = 100;
+
+        public SvgSink(StringBuilder sb, PlotTransform t, HpglRenderOptions opt)
+        {
+            _sb = sb; _t = t; _opt = opt;
+            _diag = Math.Sqrt((double)opt.Width * opt.Width + (double)opt.Height * opt.Height);
+            _simplifyPx = opt.SvgSimplifyTolerancePx;
+        }
+
+        public void SetLineType(int lineType) { _lineType = lineType; }
+
+        /// <summary>Low-fidelity label mode: emit labels as &lt;text&gt; instead of single-stroke font.</summary>
+        public bool TextLabels => _opt.SvgTextLabels;
+
+        /// <summary>Emits a horizontal label as one &lt;text&gt; element (monospace) at its baseline origin.</summary>
+        public void DrawText(double ox, double oy, string text, double capUnits, int pen)
+        {
+            Flush();   // close any pending stroke path so the text paints over the geometry
+            int px = R(_t.MapX(ox)), py = R(_t.MapY(oy));
+            // SVG font-size is the em (cap height is ~0.7 of it), so the cap-height value alone renders
+            // too small; scale it up so the text reads at roughly the intended label size.
+            int size = (int)Math.Max(12.0, capUnits * _t.Scale * 2.0);
+            _sb.Append("<text x=\"").Append(px).Append("\" y=\"").Append(py)
+               .Append("\" fill=\"").Append(ToHex(_opt.ResolvePen(pen)))
+               .Append("\" font-family=\"monospace\" font-size=\"").Append(size).Append("px\">")
+               .Append(Escape(text)).Append("</text>\n");
+        }
+
+        private static string Escape(string s) =>
+            s.IndexOfAny(new[] { '&', '<', '>' }) < 0 ? s
+                : s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+
+        public void FillPolygon(IReadOnlyList<double> xs, IReadOnlyList<double> ys, int pen)
+        {
+            if (xs.Count < 3) return;
+            Flush(); // paint the fill beneath any subsequent strokes
+            _sb.Append("<polygon fill=\"").Append(ToHex(_opt.ResolvePen(pen))).Append("\" points=\"");
+            for (int i = 0; i < xs.Count; i++)
+            {
+                if (i > 0) _sb.Append(' ');
+                _sb.Append(R(_t.MapX(xs[i]))).Append(',').Append(R(_t.MapY(ys[i])));
+            }
+            _sb.Append("\"/>\n");
+        }
+
+        public void Line(double x1, double y1, double x2, double y2, int pen)
+        {
+            int ax = R(_t.MapX(x1)), ay = R(_t.MapY(y1));
+            int bx = R(_t.MapX(x2)), by = R(_t.MapY(y2));
+
+            if (_open && pen == _pen && _lineType == _runLineType)
+            {
+                if (ax == _lastX && ay == _lastY) { _runX.Add(bx); _runY.Add(by); } // continue the connected run
+                else { EndRun(); StartRun(ax, ay, bx, by); }                         // disjoint subpath, same pen group
+            }
+            else
+            {
+                Flush();                                                             // pen/line-type change -> new <path>
+                _pen = pen; _runLineType = _lineType; _open = true;
+                StartRun(ax, ay, bx, by);
+            }
+            _lastX = bx; _lastY = by;
+        }
+
+        private void StartRun(int ax, int ay, int bx, int by)
+        {
+            _runX.Clear(); _runY.Clear();
+            _runX.Add(ax); _runY.Add(ay);
+            _runX.Add(bx); _runY.Add(by);
+        }
+
+        /// <summary>Finalises the current run (RDP-simplifying long ones) as an "M..." subpath in the path data.</summary>
+        private void EndRun()
+        {
+            int n = _runX.Count;
+            if (n < 2) { _runX.Clear(); _runY.Clear(); return; }
+
+            int[] keep = (_simplifyPx > 0 && n > SimplifyMinPoints) ? Rdp(_runX, _runY, _simplifyPx) : null;
+            int count = keep != null ? keep.Length : n;
+
+            _pathData.Append('M');
+            for (int i = 0; i < count; i++)
+            {
+                int j = keep != null ? keep[i] : i;
+                if (i > 0) _pathData.Append(' ');
+                _pathData.Append(_runX[j]).Append(',').Append(_runY[j]);
+            }
+            _runX.Clear(); _runY.Clear();
+        }
+
+        /// <summary>Writes the pending &lt;path&gt; (all batched strokes of one pen/line type) and resets.</summary>
+        public void Flush()
+        {
+            if (!_open) return;
+            EndRun();
+            _sb.Append("<path fill=\"none\" stroke=\"").Append(ToHex(_opt.ResolvePen(_pen)))
+               .Append("\" stroke-width=\"1\"");
+            float[] dash = HpglLineTypes.DashArray(_runLineType, _diag);
+            if (dash != null)
+            {
+                _sb.Append(" stroke-dasharray=\"");
+                for (int i = 0; i < dash.Length; i++)
+                {
+                    if (i > 0) _sb.Append(',');
+                    _sb.Append(R(dash[i]));
+                }
+                _sb.Append('"');
+            }
+            _sb.Append(" d=\"").Append(_pathData).Append("\"/>\n");
+            _pathData.Clear();
+            _open = false;
+        }
+
+        /// <summary>Iterative Ramer-Douglas-Peucker; returns the indices of kept points (endpoints always kept).</summary>
+        private static int[] Rdp(List<int> xs, List<int> ys, double eps)
+        {
+            int n = xs.Count;
+            var keep = new bool[n];
+            keep[0] = true; keep[n - 1] = true;
+            var stack = new Stack<int[]>();
+            stack.Push(new[] { 0, n - 1 });
+            while (stack.Count > 0)
+            {
+                int[] seg = stack.Pop();
+                int first = seg[0], last = seg[1];
+                if (last <= first + 1) continue;
+                double ax = xs[first], ay = ys[first], bx = xs[last], by = ys[last];
+                double dx = bx - ax, dy = by - ay;
+                double len = Math.Sqrt(dx * dx + dy * dy);
+                double dmax = -1; int idx = -1;
+                for (int i = first + 1; i < last; i++)
+                {
+                    double d = len == 0
+                        ? Math.Sqrt((xs[i] - ax) * (xs[i] - ax) + (ys[i] - ay) * (ys[i] - ay))
+                        : Math.Abs(dy * xs[i] - dx * ys[i] + bx * ay - by * ax) / len;
+                    if (d > dmax) { dmax = d; idx = i; }
+                }
+                if (dmax > eps && idx > first)
+                {
+                    keep[idx] = true;
+                    stack.Push(new[] { first, idx });
+                    stack.Push(new[] { idx, last });
+                }
+            }
+            var result = new List<int>(n);
+            for (int i = 0; i < n; i++) if (keep[i]) result.Add(i);
+            return result.ToArray();
+        }
+
+        private static int R(float v) => (int)Math.Round(v);
+
+        internal static string ToHex(Color c) =>
+            "#" + c.R.ToString("X2") + c.G.ToString("X2") + c.B.ToString("X2");
+    }
+}

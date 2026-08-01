@@ -1,0 +1,56 @@
+<!--
+  Hpgl.Rendering - HP-GL/2 and PCL vector-to-bitmap renderer.
+
+  The HP-GL plotter-emulation capture-and-render technique that motivates this
+  library is derived from the HP7470A Plotter Emulator (7470.cpp) by John Miles,
+  KE5FX. Original C++ author: John Miles (KE5FX) - http://www.ke5fx.com/
+  This independent C# adaptation carries no warranty from KE5FX.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net8.0-windows, not plain net8.0: System.Drawing.Common is Windows-only from
+         .NET 6 onward (it throws on Unix, and .NET 7 removed the compat switch), so the
+         TFM should state that constraint rather than fail at run time. -->
+    <TargetFrameworks>net472;net8.0-windows</TargetFrameworks>
+    <AssemblyName>Hpgl.Rendering</AssemblyName>
+    <RootNamespace>Hpgl.Rendering</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PackageId>Hpgl.Rendering</PackageId>
+    <Product>Hpgl.Rendering</Product>
+    <Title>Hpgl.Rendering</Title>
+    <Description>Standalone HP-GL/2 and PCL renderer: turns a plotter or printer stream captured from a test instrument into a PNG, an SVG, or a System.Drawing.Bitmap. No GPIB or VISA dependencies, and none at all on net472. Includes PCL raster support and repair passes for streams captured over a real bus. Plot-emulation technique derived from KE5FX's 7470.cpp (http://www.ke5fx.com/).</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>hpgl;hpgl2;pcl;plotter;printer;gpib;instrument;oscilloscope;spectrum-analyzer;rendering;svg;hp7470</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' != 'net472'">
+    <PackageReference Include="System.Drawing.Common" Version="8.0.10" />
+  </ItemGroup>
+
+  <!-- The repository README is the package README - one source of truth. -->
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Hpgl.Rendering.Tests" />
+  </ItemGroup>
+
+  <!-- Version is inferred from the nearest 'v*' git tag. -->
+  <ItemGroup>
+    <PackageReference Include="MinVer" Version="6.0.0" PrivateAssets="all" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <MinVerTagPrefix>v</MinVerTagPrefix>
+  </PropertyGroup>
+
+</Project>

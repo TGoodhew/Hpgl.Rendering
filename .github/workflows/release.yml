@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: windows-latest
+
+    # Protected environment: every publish pauses for approval before anything is
+    # pushed. NuGet is unforgiving - a published version can be unlisted, but never
+    # replaced or deleted - so this gate matters more than it does for a GitHub release.
+    environment: release
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # MinVer reads the tag being built
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build
+        run: dotnet build Hpgl.Rendering.sln -c Release
+
+      - name: Test (both target frameworks)
+        run: dotnet test Hpgl.Rendering.sln -c Release --no-build --verbosity normal
+
+      - name: Pack
+        run: dotnet pack src/Hpgl.Rendering/Hpgl.Rendering.csproj -c Release --no-build -o artifacts
+
+      - name: Push to NuGet
+        run: >
+          dotnet nuget push "artifacts/*.nupkg"
+          --source https://api.nuget.org/v3/index.json
+          --api-key ${{ secrets.NUGET_API_KEY }}
+          --skip-duplicate
+
+      - name: Attach packages to the GitHub release
+        run: gh release create ${{ github.ref_name }} artifacts/* --generate-notes --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
