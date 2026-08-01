@@ -5,6 +5,17 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# Least privilege at the top level; the publish job widens `contents` to write for the
+# GitHub release it creates. Nothing else in this workflow needs any write scope.
+permissions:
+  contents: read
+
+# A release is never worth cancelling mid-flight, and two runs for the same tag must not
+# race toward `nuget push`. Queue instead of cancelling.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: windows-latest
@@ -15,16 +26,18 @@ jobs:
     environment: release
 
     permissions:
-      contents: write
+      contents: write   # creating the GitHub release and uploading its assets
 
     steps:
-      - uses: actions/checkout@v4
+      # SHA-pinned for the same reason as CI, and more so: this job holds a token that
+      # can write releases and a NuGet API key.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0   # MinVer reads the tag being built
 
       # Must satisfy global.json's SDK pin - a release built on a different SDK than
       # CI validated would undercut the reproducible-build guarantee.
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: '10.0.x'
 
@@ -37,6 +50,9 @@ jobs:
       - name: Pack
         run: dotnet pack src/Hpgl.Rendering/Hpgl.Rendering.csproj -c Release --no-build -o artifacts
 
+      # Pushing the .nupkg glob also pushes the matching .snupkg automatically - that is
+      # what `--no-symbols` opts out of. Do not "fix" this to artifacts/*, which would
+      # submit the symbol package as a primary package.
       - name: Push to NuGet
         run: >
           dotnet nuget push "artifacts/*.nupkg"
