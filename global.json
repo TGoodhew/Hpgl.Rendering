@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/global.json",
+  "comment": [
+    "Pins the SDK so a local build and a CI build use the same toolchain - a",
+    "prerequisite for the reproducible-build claim the package makes (see issue #18).",
+    "This pins the *SDK*, not the target frameworks: the library still builds",
+    "net472 and net8.0-windows exactly as before.",
+    "rollForward=latestFeature accepts any newer 10.0.x SDK (so CI's '10.0.x' install",
+    "and a local servicing update both satisfy it) while refusing a silent jump to 11.x."
+  ],
+  "sdk": {
+    "version": "10.0.301",
+    "rollForward": "latestFeature",
+    "allowPrerelease": false
+  }
+}
