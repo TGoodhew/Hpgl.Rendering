@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-// Size-independent typography metrics for the StrokeFont (issue #31).
+// Size-independent typography metrics for the StrokeFont.
 //
 // These assert the font's grid-level invariants (cap height, baseline, x-height,
 // descender depth, pitch) - properties that hold at every SI/SR size and on every
@@ -114,7 +114,7 @@ namespace Hpgl.Rendering.Tests
             }
         }
 
-        /// <summary>HP-GL labelling all printable ASCII (0x20-0x7E) in a grid - the visual catalog (#31).</summary>
+        /// <summary>HP-GL labelling all printable ASCII (0x20-0x7E) in a grid - the visual catalog.</summary>
         private static string BuildCatalog()
         {
             const char etx = (char)3;

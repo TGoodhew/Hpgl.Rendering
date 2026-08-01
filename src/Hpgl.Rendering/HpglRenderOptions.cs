@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-// Hpgl.Rendering - HP-GL/2 vector-to-bitmap renderer (.NET Framework 4.7.2).
+// Hpgl.Rendering - render options for the HP-GL/2 and PCL renderers.
 //
 // The HP-GL plotter-emulation capture-and-render technique that motivates this
 // library is derived from the HP7470A Plotter Emulator (7470.cpp) by John Miles,

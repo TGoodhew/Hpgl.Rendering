@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-// Hpgl.Rendering - HP-GL/2 vector-to-bitmap renderer (.NET Framework 4.7.2).
+// Hpgl.Rendering - HP-GL/2 vector-to-bitmap renderer.
 //
 // The HP-GL plotter-emulation capture-and-render technique that motivates this
 // library is derived from the HP7470A Plotter Emulator (7470.cpp) by John Miles,
@@ -8,7 +8,7 @@
 //
 // This is a clean, general HP-GL/2 vector renderer. Unlike 7470.cpp it contains
 // no per-instrument fix-ups; instrument-specific quirks belong in the caller's
-// capture profile, not here. Covered so far (issue #8): IN/DF, IP/SC, RO, IW
+// capture profile, not here. Covered so far: IN/DF, IP/SC, RO, IW
 // (soft-clip), SP, PU/PD/PA/PR, arcs/circles/wedges (CI/AA/AR/EW) and edge
 // rectangles (EA/ER) via chord subdivision, line types (LT) as dash patterns,
 // area fill (RA/RR/WG, FT/PT) - solid via polygon fill, hatch as line spans -
@@ -40,7 +40,7 @@ namespace Hpgl.Rendering
             var instructions = HpglParser.Parse(hpgl ?? string.Empty);
 
             // Pass 1: measure the drawn extent so the transform can auto-fit it. Make the extent robust to
-            // a single corrupted coordinate so it can't collapse the whole plot (#52).
+            // a single corrupted coordinate so it can't collapse the whole plot.
             var measure = new MeasureSink();
             Execute(instructions, measure);
             measure.ApplyRobustExtent(out _);
@@ -90,7 +90,7 @@ namespace Hpgl.Rendering
 
             var measure = new MeasureSink();
             Execute(instructions, measure);
-            measure.ApplyRobustExtent(out _);   // robust to a single corrupted coordinate (#52)
+            measure.ApplyRobustExtent(out _);   // robust to a single corrupted coordinate
 
             var sb = new StringBuilder();
             // Pure responsive root: a viewBox (the coordinate system) + preserveAspectRatio, and NO fixed
@@ -266,7 +266,7 @@ namespace Hpgl.Rendering
                 // The first coordinate after a reset only establishes the pen position; never draw a line
                 // to it from the default origin - even if the pen is down. Some instruments (8720/8753)
                 // emit PD before their first PA, which would otherwise streak a line from (0,0) to the
-                // first trace point. Once a position is established, pen-down moves draw normally. (#55)
+                // first trace point. Once a position is established, pen-down moves draw normally.
                 if (state.PenDown && state.PositionEstablished) sink.Line(state.X, state.Y, nx, ny, state.Pen);
                 state.X = nx;
                 state.Y = ny;
@@ -306,7 +306,7 @@ namespace Hpgl.Rendering
             bool activeAlt = s.ActiveAlternate;
 
             // Low-fidelity SVG: render the whole label as one <text> element instead of dozens of font
-            // strokes - far smaller/faster to display inline (#23). Only for a plain horizontal, single-
+            // strokes - a large label-heavy plot shrinks dramatically. Only for a plain horizontal, single-
             // line label (no symbol mode, clip, shift-set, or embedded CR/LF); anything else falls through
             // to the exact single-stroke font below. SVG-only; the raster path always uses the stroke font.
             if (sink.TextLabels && !s.HasClip && s.SymbolChar < 0
@@ -326,8 +326,8 @@ namespace Hpgl.Rendering
                 if (ch == '') { activeAlt = false; continue; }  // shift-in  -> standard set
 
                 // Resolve the active character set (CS/CA designate, SS/SA + shift select). Only Set 0
-                // (ASCII) has a table today; other sets fall back to it - the typography analyzer reports
-                // when that happens so a capture self-reports the gap (#56).
+                // (ASCII) has a table today; other sets fall back to it - UnsupportedTypography reports
+                // when that happens, so the substitution need not be spotted by eye.
                 int[][] glyph = StrokeFont.Get(ch, activeAlt ? s.AlternateSet : s.StandardSet);
                 if (glyph != null)
                 {
@@ -738,7 +738,7 @@ namespace Hpgl.Rendering
         // corners of the paper, which is NON-SQUARE (landscape ~10000 x 7200, ratio ~1.39) - NOT a
         // square frame. The aspect matters: under SC, scaleX/scaleY = (P2x-P1x)/(P2y-P1y), so a square
         // user range (e.g. SC 0,500,0,500) yields ELLIPSES on real hardware, and seeds SR char size,
-        // ticks (TL/XT/YT) and the default hatch spacing. (#28)
+        // ticks (TL/XT/YT) and the default hatch spacing.
         private const double DefP2X = 10000, DefP2Y = 7200;
         private double _ipX1 = 0, _ipY1 = 0, _ipX2 = DefP2X, _ipY2 = DefP2Y;
         private double _scXmin, _scXmax, _scYmin, _scYmax;
@@ -1204,7 +1204,7 @@ namespace Hpgl.Rendering
         public double MaxX = double.MinValue, MaxY = double.MinValue;
         public bool HasExtent => MaxX >= MinX && MaxY >= MinY;
 
-        // Every visited coordinate, kept so the extent can be made robust to a single corrupted value (#52).
+        // Every visited coordinate, kept so the extent can be made robust to a single corrupted value.
         private readonly List<double> _xs = new List<double>();
         private readonly List<double> _ys = new List<double>();
 
@@ -1232,7 +1232,7 @@ namespace Hpgl.Rendering
         }
 
         /// <summary>
-        /// #52: clamp the extent so one corrupted coordinate (a transient GPIB digit run-on, e.g. a value
+        /// Clamps the extent so one corrupted coordinate (a transient GPIB digit run-on, e.g. a value
         /// 30x the plotter frame) can't blow up the auto-fit and collapse the whole plot to a line. Peels
         /// values that sit a large gap (> K x the data span) beyond the rest of the data, on either axis.
         /// Returns true (with a human-readable detail) if any outlier was excluded; otherwise leaves the
@@ -1362,8 +1362,8 @@ namespace Hpgl.Rendering
     }
 
     /// <summary>
-    /// Emits SVG for the fitted plot, optimised so the model can re-emit it as an artifact quickly
-    /// (issue #23): ALL strokes that share a pen + line type are batched into ONE &lt;path&gt; element
+    /// Emits SVG for the fitted plot, optimised for document size: ALL strokes that share a pen and
+    /// line type are batched into ONE &lt;path&gt; element
     /// (disjoint runs as "M" subpaths) so the per-element wrapper - over half the document otherwise -
     /// is not repeated per stroke. Long runs (e.g. a spectrum trace) are Ramer-Douglas-Peucker-
     /// simplified at a sub-pixel tolerance; short runs (font glyphs, graticule, circles, arcs) are kept

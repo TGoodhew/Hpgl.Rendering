@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-// Tests for PclRasterRepair (#82): re-framing PCL raster rows shifted by a GPIB
+// Tests for PclRasterRepair: re-framing PCL raster rows shifted by a GPIB
 // read drop-out so each ESC*b<n>W is followed by exactly <n> payload bytes.
 // -----------------------------------------------------------------------------
 
@@ -73,7 +73,7 @@ namespace Hpgl.Rendering.Tests
         [Fact]
         public void Repair_PadsAShortRowBackToItsDeclaredLength()
         {
-            // Drop one data byte from the middle of row 4 - the exact GPIB read-seam defect from #82.
+            // Drop one data byte from the middle of row 4 - the exact GPIB read-seam defect seen on a real capture.
             var clean = Stream(rows: 8, rowLen: 80);
             int row4Cmd = IndexOfNthRow(clean, 4);
             int dropAt = row4Cmd + Cmd("*b80W").Count() + 40;   // a data byte inside row 4
