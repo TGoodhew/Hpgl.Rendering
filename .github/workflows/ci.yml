@@ -1,10 +1,25 @@
 name: CI
 
+# `pull_request`, NOT `pull_request_target`: this workflow checks out and builds the
+# contributor's code, so it must run with the fork's read-only token and no access to
+# repository secrets. `pull_request_target` would run it against the base repo's
+# permissions with the PR's code - do not "fix" this to that.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+
+# Least privilege: this workflow only reads the repository. Nothing here writes to it -
+# the artifact upload is scoped by the job's own token, not by `contents`.
+permissions:
+  contents: read
+
+# A newer push to the same branch or PR makes the in-flight run irrelevant; cancel it.
+# Not applied to `main` pushes, where every commit's result is worth keeping.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-test:
@@ -12,13 +27,16 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      # Third-party actions are pinned to a full commit SHA, not a tag: a tag can be
+      # repointed, and a compromised action would run with this job's token. Dependabot
+      # (see the Dependabot issue) updates these SHAs and the trailing version comment.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0   # MinVer needs the full history to find the nearest tag
 
       # Must satisfy global.json's SDK pin. The SDK version is independent of the
       # target frameworks - the 10.0 SDK builds net472 and net8.0-windows.
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: '10.0.x'
 
@@ -36,7 +54,7 @@ jobs:
       - name: Pack
         run: dotnet pack src/Hpgl.Rendering/Hpgl.Rendering.csproj -c Release --no-build -o artifacts
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nupkg
           path: artifacts/*
