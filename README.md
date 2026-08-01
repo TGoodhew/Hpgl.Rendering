@@ -85,6 +85,50 @@ are included, both compression-agnostic and safe to run on clean input:
   data. Recovers the framing; the affected scanline may still be a few pixels off, since
   the dropped byte's position within its row is unknowable.
 
+### Instruments that return a screenshot instead
+
+Not every hardcopy arrives as a vector stream. Some instruments hand back their screen
+directly as an image via a SCPI query (Rigol's `:DISP:DATA?`, for example), with nothing
+to render. `ScreenImage` normalises those bytes so a caller handling both kinds of capture
+still ends up with one output format:
+
+```csharp
+byte[] png = ScreenImage.ToPng(imageBytes);            // BMP/GIF/JPEG/PNG in, PNG out
+ScreenImage.Dimensions(imageBytes, out int w, out int h);
+```
+
+A Rigol BMP is ~1.1 MB uncompressed; the PNG is a fraction of that. Both methods throw
+`ArgumentException` on null or empty input.
+
+### Displaying the output
+
+**WinForms** takes the `Bitmap` directly:
+
+```csharp
+pictureBox.Image = HpglRenderer.RenderToBitmap(hpgl);   // caller owns it - dispose it
+```
+
+**WPF** will not accept a `System.Drawing.Bitmap`. Go via the PNG bytes rather than
+`CreateBitmapSourceFromHBitmap`, which leaks the HBITMAP unless you `DeleteObject` it:
+
+```csharp
+var image = new BitmapImage();
+image.BeginInit();
+image.StreamSource = new MemoryStream(HpglRenderer.RenderToPng(hpgl));
+image.CacheOption  = BitmapCacheOption.OnLoad;   // decode now, so the stream can be freed
+image.EndInit();
+image.Freeze();                                  // safe to hand to the UI thread
+```
+
+`CacheOption = OnLoad` is not optional: without it `BitmapImage` decodes lazily and holds
+the stream open. The same applies to the raw `Bitmap` path — `new Bitmap(stream)` requires
+the stream to outlive the bitmap, which is why `ScreenImage` copies into a stream it owns.
+
+**SVG has no built-in path.** Neither `System.Drawing` nor WPF can display SVG; that needs
+a third-party rasterizer (SharpVectors, Svg.Skia) or a WebView. If you want pixels, call
+`RenderToBitmap` / `RenderToPng` — they rasterize the same geometry directly. `RenderToSvg`
+is for when the output should stay resolution-independent.
+
 ### Deliberately out of scope
 
 The interactive / live-bus instructions return data to the controller or drive hardware

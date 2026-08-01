@@ -1,8 +1,7 @@
-using System.Collections.Generic;
+using System;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
-using System.Text.RegularExpressions;
 using Hpgl.Rendering;
 using Xunit;
 
@@ -61,68 +60,21 @@ namespace Hpgl.Rendering.Tests
             }
         }
 
-        [Fact]
-        public void ToBoundedInlineSvg_FitsBudget_AndEmbedsPngDataUri()
+        // The XML docs promise ArgumentException on empty input; pin that so it stays part of the contract.
+        [Theory]
+        [InlineData(null)]
+        [InlineData(new byte[0])]
+        public void ToPng_ThrowsArgumentException_OnMissingData(byte[] bytes)
         {
-            using (var src = MakeScreenshot(1024, 768))
-            {
-                string svg = ScreenImage.ToBoundedInlineSvg(Encode(src, ImageFormat.Png), 12000);
-
-                Assert.NotNull(svg);
-                Assert.True(svg.Length <= 12000, "inline SVG must fit the budget; was " + svg.Length);
-                Assert.Contains("data:image/png;base64,", svg);
-                Assert.Contains("<svg", svg);
-            }
+            Assert.Throws<ArgumentException>(() => ScreenImage.ToPng(bytes));
         }
 
-        [Fact]
-        public void ToBoundedInlineSvg_DownscalesLargeSource()
+        [Theory]
+        [InlineData(null)]
+        [InlineData(new byte[0])]
+        public void Dimensions_ThrowsArgumentException_OnMissingData(byte[] bytes)
         {
-            using (var src = MakeScreenshot(1600, 900))
-            {
-                string svg = ScreenImage.ToBoundedInlineSvg(Encode(src, ImageFormat.Png), 12000);
-                Assert.NotNull(svg);
-                int width = int.Parse(Regex.Match(svg, "width=\"(\\d+)\"").Groups[1].Value);
-                Assert.True(width < 1600, "a 1600px source should be downscaled; thumbnail width = " + width);
-            }
-        }
-
-        [Fact]
-        public void ToBoundedInlineSvg_ProducesBlackAndWhitePreview()
-        {
-            // The inline preview is 1-bit B&W (so a useful-size thumbnail fits the tiny paste budget).
-            // Decode the embedded PNG and confirm it only contains black/white pixels.
-            using (var src = MakeScreenshot(800, 480))
-            {
-                string svg = ScreenImage.ToBoundedInlineSvg(Encode(src, ImageFormat.Png), 3400);
-                Assert.NotNull(svg);
-                string b64 = Regex.Match(svg, "base64,([^\"]+)").Groups[1].Value;
-                using (var ms = new MemoryStream(System.Convert.FromBase64String(b64)))
-                using (var thumb = new Bitmap(ms))
-                {
-                    var seen = new HashSet<int>();
-                    for (int y = 0; y < thumb.Height; y += 2)
-                        for (int x = 0; x < thumb.Width; x += 2)
-                            seen.Add(thumb.GetPixel(x, y).ToArgb());
-                    Assert.All(seen, argb =>
-                    {
-                        var c = Color.FromArgb(argb);
-                        Assert.True((c.R == 0 && c.G == 0 && c.B == 0) || (c.R == 255 && c.G == 255 && c.B == 255),
-                            "B&W preview should be pure black/white; saw " + c);
-                    });
-                }
-            }
-        }
-
-        [Fact]
-        public void ToBoundedInlineSvg_ReturnsNull_WhenBudgetTooSmall()
-        {
-            using (var src = MakeScreenshot(800, 480))
-            {
-                // No thumbnail (even the smallest) can fit a 100-char SVG -> caller falls back to file-only.
-                string svg = ScreenImage.ToBoundedInlineSvg(Encode(src, ImageFormat.Png), 100);
-                Assert.Null(svg);
-            }
+            Assert.Throws<ArgumentException>(() => ScreenImage.Dimensions(bytes, out _, out _));
         }
     }
 }

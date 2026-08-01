@@ -22,7 +22,7 @@
     <PackageId>Hpgl.Rendering</PackageId>
     <Product>Hpgl.Rendering</Product>
     <Title>Hpgl.Rendering</Title>
-    <Description>Standalone HP-GL/2 and PCL renderer: turns a plotter or printer stream captured from a test instrument into a PNG, an SVG, or a System.Drawing.Bitmap. No GPIB or VISA dependencies, and none at all on net472. Includes PCL raster support and repair passes for streams captured over a real bus. Plot-emulation technique derived from KE5FX's 7470.cpp (http://www.ke5fx.com/).</Description>
+    <Description>Standalone HP-GL/2 and PCL renderer: turns a plotter or printer stream captured from a test instrument into a PNG, an SVG, or a System.Drawing.Bitmap. Also normalises instruments that return their screen as an image rather than a vector stream, so either kind of capture ends up as a PNG. No GPIB or VISA dependencies, and none at all on net472. Includes PCL raster support and repair passes for streams captured over a real bus. Plot-emulation technique derived from KE5FX's 7470.cpp (http://www.ke5fx.com/).</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>hpgl;hpgl2;pcl;plotter;printer;gpib;instrument;oscilloscope;spectrum-analyzer;rendering;svg;hp7470</PackageTags>
   </PropertyGroup>
