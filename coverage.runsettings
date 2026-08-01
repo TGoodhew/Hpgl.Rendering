@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Coverage settings shared by local runs and CI, so a threshold argued locally is the
+  same number CI enforces. Pass this file to "dotnet test" with the settings switch,
+  alongside the XPlat Code Coverage collector; see the CI workflow for the exact
+  invocation. (An XML comment cannot contain a double hyphen, hence no literal command
+  line here.)
+-->
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat code coverage">
+        <Configuration>
+          <Format>cobertura</Format>
+
+          <!-- StrokeFont.cs is GENERATED from the KE5FX vector-character table by
+               tools/ke5fx_font/generate_strokefont.py. It is a glyph data table, not
+               logic: covering it would mean asserting on ~95 hand-transcribed stroke
+               arrays, and its correctness is already asserted behaviourally by the
+               font-metrics and label-rendering tests. Counting it would inflate the
+               number without adding evidence. -->
+          <ExcludeByFile>**/StrokeFont.cs</ExcludeByFile>
+
+          <!-- Auto-implemented property getters/setters are compiler-generated and
+               carry no logic to test; counting them flatters the result. -->
+          <SkipAutoProps>true</SkipAutoProps>
+
+          <ExcludeByAttribute>Obsolete,GeneratedCodeAttribute,CompilerGeneratedAttribute</ExcludeByAttribute>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>
