@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-// Render-regression test (issue #21) for Hpgl.Rendering.
+// Render-regression test for Hpgl.Rendering.
 //
 // Renders a real HP 8563E capture (Test/test.plt) with the library's default
 // options and compares it to the committed golden image (Test/test-expected.png).
@@ -148,7 +148,7 @@ namespace Hpgl.Rendering.Tests
         [Fact]
         public void RenderToSvg_TestPlot_StaysUnderSizeBudget()
         {
-            // #23: keep the inline SVG small so the model re-emits it as an artifact quickly. The
+            // Keep the SVG document small - it is the resolution-independent output form. The
             // stroke-font labels + a full 601-point trace are ~21 KB; per-pen <path> coalescing plus
             // sub-pixel trace simplification keep the same 8563E capture well under budget with no
             // visible change. Guards against a size regression (e.g. reverting the path coalescing).

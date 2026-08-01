@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-// Hpgl.Rendering - HP PCL raster renderer (.NET Framework 4.7.2).
+// Hpgl.Rendering - HP PCL raster renderer.
 //
 // Public front-end for PCL "print" hardcopy, complementing HpglRenderer's HP-GL/2
 // "plot" vector path. Decodes a PCL byte stream (see PclRasterDecoder) to a

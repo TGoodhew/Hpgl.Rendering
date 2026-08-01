@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-// Hpgl.Rendering - trace-coordinate repair for GPIB read drop-outs (#79).
+// Hpgl.Rendering - trace-coordinate repair for GPIB read drop-outs.
 //
 // The HP-GL plotter-emulation capture-and-render technique is derived from the
 // HP7470A Plotter Emulator (7470.cpp) by John Miles, KE5FX - http://www.ke5fx.com/
@@ -14,8 +14,8 @@ namespace Hpgl.Rendering
     /// <summary>
     /// Repairs a single corrupted X coordinate in a spectrum/network trace polyline.
     ///
-    /// A byte dropped on the GPIB read at a chunked-read seam (confirmed in #79: every streaming read is a
-    /// timeout-partial chunk, and a dropped digit lands on a read boundary) shortens an X value - e.g.
+    /// A byte dropped on the GPIB read at a chunked-read seam (measured on a real capture: every streaming
+    /// read is a timeout-partial chunk, and the dropped digit lands on a read boundary) shortens an X value - e.g.
     /// "995" -&gt; "95" - so the pen jumps backwards toward the page edge and then recovers on the next
     /// point, drawing a stray excursion. A trace is a long run of pen-down coordinate pairs whose X is a
     /// strictly increasing regular grid, so an interior vertex whose X falls outside the [left, right]
@@ -24,9 +24,9 @@ namespace Hpgl.Rendering
     ///
     /// Only long coordinate runs (a real trace) are considered - graticule lines legitimately run
     /// right-to-left and short marker/annotation moves are left byte-for-byte intact. Amplitude (Y) spikes
-    /// are never touched: they are indistinguishable from a real signal peak. The repaired HP-GL is used
-    /// for both the rendered image and the bytes handed back via return_hpgl_base64, so a plot forwarded to
-    /// a plotter is excursion-free too; the verbatim debug dump keeps the unrepaired capture.
+    /// are never touched: they are indistinguishable from a real signal peak. The method returns the
+    /// repaired HP-GL rather than mutating anything, so a caller can render it, forward it to a plotter
+    /// excursion-free, and still keep the verbatim capture for a debug dump.
     /// </summary>
     public static class HpglTraceRepair
     {

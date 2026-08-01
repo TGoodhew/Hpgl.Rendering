@@ -29,7 +29,7 @@ namespace Hpgl.Rendering.Tests
             // The 8720/8753 emit PD before their first PA. The first coordinate must only position the
             // pen (no line drawn to it from the default origin), else a line streaks from the corner to
             // the first trace point. Here the only real geometry is a vertical line; a streak would
-            // widen the inked region into a triangle. (#55)
+            // widen the inked region into a triangle.
             var hpgl = "IN;PD;PA8000,2000;PA8000,6000;";
             var opt = new HpglRenderOptions { Width = 200, Height = 200, Background = HpglBackground.Black, Antialias = false };
             using (var bmp = HpglRenderer.RenderToBitmap(hpgl, opt))
@@ -44,7 +44,7 @@ namespace Hpgl.Rendering.Tests
             }
         }
 
-        // ---- #56 typography: set-aware glyph lookup + gap self-report ------------
+        // ---- typography: set-aware glyph lookup + gap reporting --------------------
 
         [Fact]
         public void StrokeFont_OnlySet0Implemented_FallsBackToAsciiGlyph()
@@ -81,7 +81,7 @@ namespace Hpgl.Rendering.Tests
             Assert.Contains(gaps, g => g.Contains("charset 4"));
         }
 
-        // ---- #52 corrupted-coordinate robustness ---------------------------------
+        // ---- corrupted-coordinate robustness -------------------------------------
 
         // A normal plot (bulk within [0,1000]) plus one wild Y value, as a transient GPIB glitch produces.
         private const string OutlierPlot =
@@ -112,7 +112,7 @@ namespace Hpgl.Rendering.Tests
             }
         }
 
-        // ---- line width (print darkness, #85) ------------------------------------
+        // ---- line width (print darkness) -----------------------------------------
 
         [Fact]
         public void LineWidthPx_DefaultsToOne()
@@ -258,7 +258,7 @@ namespace Hpgl.Rendering.Tests
             Assert.Equal(1, polylines);
         }
 
-        // ---- arcs, circles, rectangles (issue #8 §3.3/§3.4) ------------------
+        // ---- arcs, circles, rectangles (rendering spec §3.3/§3.4) ------------------
 
         private static int Polylines(string svg) =>
             svg.Count(c => c == 'M');
@@ -316,7 +316,7 @@ namespace Hpgl.Rendering.Tests
             Assert.Equal(5, Vertices(svg));
         }
 
-        // ---- line types (issue #8 §3.5) -------------------------------------
+        // ---- line types (rendering spec §3.5) -------------------------------------
 
         [Fact]
         public void LineType_DashedVector_EmitsStrokeDashArray()
@@ -359,7 +359,7 @@ namespace Hpgl.Rendering.Tests
             Assert.DoesNotContain("stroke-dasharray", svg);
         }
 
-        // ---- area fill (issue #8 §3.4: RA/RR/WG, FT, PT) --------------------
+        // ---- area fill (rendering spec §3.4: RA/RR/WG, FT, PT) --------------------
 
         [Fact]
         public void FillRect_RA_SolidByDefault_EmitsPolygon()
@@ -412,7 +412,7 @@ namespace Hpgl.Rendering.Tests
                 Assert.True(CountNonBackgroundPixels(bf, Color.Black) > 4 * CountNonBackgroundPixels(bo, Color.Black));
         }
 
-        // ---- 7550A polygons (issue #8 §4.1: PM/EP/FP) ----------------------
+        // ---- 7550A polygons (rendering spec §4.1: PM/EP/FP) ----------------------
 
         // Define a triangle in polygon mode, then fill or edge it.
         private const string Triangle =
@@ -471,7 +471,7 @@ namespace Hpgl.Rendering.Tests
             }
         }
 
-        // ---- default P1/P2 frame aspect (issue #28) ------------------------
+        // ---- default P1/P2 frame aspect ------------------------------------
 
         private static Rectangle DrawnBBox(string hpgl)
         {
@@ -494,7 +494,7 @@ namespace Hpgl.Rendering.Tests
         public void ScaleOnDefaultFrame_DrawsEllipse_NotCircle()
         {
             // The default P1/P2 frame is non-square (landscape ~10000x7200), so SC of a SQUARE user
-            // range makes a circle render as a wider ellipse - as a real HP 7475A/7550A does (#28).
+            // range makes a circle render as a wider ellipse - as a real HP 7475A/7550A does.
             var b = DrawnBBox("IN;SC0,500,0,500;PA250,250;CI100;");
             Assert.True(b.Width > b.Height * 1.25,
                 "SC circle on the default frame should be a wider ellipse; w=" + b.Width + " h=" + b.Height);
@@ -509,7 +509,7 @@ namespace Hpgl.Rendering.Tests
             Assert.InRange(ratio, 0.9, 1.1);
         }
 
-        // ---- ticks (issue #8 §3.5: TL/XT/YT) -------------------------------
+        // ---- ticks (rendering spec §3.5: TL/XT/YT) -------------------------
 
         [Fact]
         public void Ticks_XT_YT_DrawTwoCrossedSegments()
@@ -519,7 +519,7 @@ namespace Hpgl.Rendering.Tests
             Assert.Equal(4, Vertices(svg));    // two endpoints each
         }
 
-        // ---- user-defined fill (issue #8 §4.2: UF) -------------------------
+        // ---- user-defined fill (rendering spec §4.2: UF) -------------------------
 
         [Fact]
         public void UserFill_UF_VariableSpacingHatch_StillFillsAsSpans()
@@ -529,7 +529,7 @@ namespace Hpgl.Rendering.Tests
             Assert.True(Polylines(svg) > 3, "UF hatch should still emit spans; got " + Polylines(svg));
         }
 
-        // ---- HP-GL/2 encoded polyline (issue #8 §12: PE) -------------------
+        // ---- HP-GL/2 encoded polyline (PE) - an HP-GL/2 extension, not in the spec doc ----
 
         // Encodes deltas the same way the decoder reads them (zig-zag, base-64, terminal high digit).
         private static string PeEncode(params (double dx, double dy)[] deltas)
@@ -596,7 +596,7 @@ namespace Hpgl.Rendering.Tests
             Assert.DoesNotContain("<path", svg);
         }
 
-        // ---- label / text subsystem (issue #8 §3.6) ------------------------
+        // ---- label / text subsystem (rendering spec §3.6) ------------------------
 
         private const string Etx = "";
 
@@ -614,7 +614,7 @@ namespace Hpgl.Rendering.Tests
         [Fact]
         public void RenderToSvg_LowFidelity_EmitsTextLabelsAndIsSmaller()
         {
-            // SvgTextLabels (low fidelity, #23): a horizontal label becomes one compact <text> element
+            // SvgTextLabels (low fidelity): a horizontal label becomes one compact <text> element
             // instead of dozens of stroke subpaths - smaller/faster to display inline.
             const string hpgl = "IN;SP1;PA1000,1000;LBCENTER 460.000kHz" + ";";
             string hi = HpglRenderer.RenderToSvg(hpgl, new HpglRenderOptions { Width = 800, Height = 600 });
@@ -630,7 +630,7 @@ namespace Hpgl.Rendering.Tests
         public void Label_CellPitch_IsMonospacedAndMatchesKe5fx()
         {
             // HP-GL character cells are fixed-pitch: every glyph advances by the same cell. The
-            // pitch reproduces the character-cell grid HP instruments place annotations on (#30):
+            // pitch reproduces the character-cell grid HP instruments place annotations on:
             // the per-character advance is ~1.375x the character width (Advance/Em = 5.5/4.0). 'M'
             // fills the glyph ink (grid x 0..4 = one character width), so pitch / 'M'-width =
             // Advance/4 ~= 1.375. Earlier 1.5x/1.25x put characters off the grid so cross-row
@@ -694,7 +694,7 @@ namespace Hpgl.Rendering.Tests
             Assert.True(Polylines(svg) >= 3, "symbols should be drawn at each point; got " + Polylines(svg));
         }
 
-        // ---- rotation (RO) and soft-clip window (IW) (issue #8 §2.4/§2.5) ---
+        // ---- rotation (RO) and soft-clip window (IW) (rendering spec §2.4/§2.5) ---
 
         [Fact]
         public void Rotation_RO90_ChangesOrientation()

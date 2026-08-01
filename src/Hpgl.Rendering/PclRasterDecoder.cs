@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-// Hpgl.Rendering - HP PCL raster-graphics decoder (.NET Framework 4.7.2).
+// Hpgl.Rendering - HP PCL raster-graphics decoder.
 //
 // Decodes an HP PCL (Printer Command Language) byte stream - the "print" hardcopy
 // many GPIB instruments emit as an alternative to an HP-GL "plot" - into a
@@ -10,7 +10,8 @@
 // Scope: what instrument screen/print dumps actually use - the raster pipeline
 // (resolution / presentation / width / height / start / compression / transfer /
 // end) and a hand-off marker for embedded HP-GL/2 picture blocks. PCL font/text
-// typography is out of scope (see issue #40).
+// typography is out of scope: instrument print dumps carry their annotation as
+// raster, so decoding PCL fonts would add a large surface for no captured input.
 // -----------------------------------------------------------------------------
 
 using System;

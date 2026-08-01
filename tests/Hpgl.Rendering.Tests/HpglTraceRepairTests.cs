@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-// Tests for HpglTraceRepair (#79): single-point trace X excursion repair.
+// Tests for HpglTraceRepair: single-point trace X excursion repair.
 // -----------------------------------------------------------------------------
 
 using System.Globalization;

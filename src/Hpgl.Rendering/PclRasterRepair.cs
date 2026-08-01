@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-// Hpgl.Rendering - PCL raster-row re-framing for GPIB read drop-outs (#82).
+// Hpgl.Rendering - PCL raster-row re-framing for GPIB read drop-outs.
 //
 // The PCL "print" capture is read off the GPIB in timeout-bounded chunks exactly
 // like the HP-GL "plot" path; the same read seams can drop a byte (the HP 37204A
@@ -8,7 +8,7 @@
 // row (ESC*b<n>W) declares an exact byte count, so a single dropped data byte
 // leaves that row one byte short. A printer then reads the *next* row's ESC as
 // this row's last raster byte, loses sync, and prints the following "*b<n>W..."
-// command as literal text - the stray glyphs seen on a real hardcopy (#82). Our
+// command as literal text - the stray glyphs seen on a real hardcopy. Our
 // own renderer is more forgiving, so the defect only shows on the wire.
 // -----------------------------------------------------------------------------
 
@@ -20,7 +20,7 @@ namespace Hpgl.Rendering
     /// <summary>
     /// Re-frames the Transfer-Raster-Data rows of a captured PCL byte stream so every <c>ESC*b&lt;n&gt;W</c>
     /// is followed by exactly <c>n</c> payload bytes before the next PCL command, healing the single-byte
-    /// drop a GPIB read seam can introduce (#82). Re-framing is compression-agnostic - the W count is the
+    /// drop a GPIB read seam can introduce. Re-framing is compression-agnostic - the W count is the
     /// payload byte count regardless of the compression method - so a short row is zero-padded back to its
     /// declared length and a long row is trimmed, which restores byte alignment for every downstream row.
     /// Only the framing is touched; well-formed streams are returned byte-for-byte unchanged.

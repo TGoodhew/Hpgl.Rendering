@@ -5,7 +5,7 @@
 // (renderer.cpp `vgen[]` / `vg_xx[]`, by John Miles + Mark S. Sims, http://www.ke5fx.com/)
 // by tools/ke5fx_font/generate_strokefont.py. The HP plotters' own glyph outlines are
 // not published as coordinate tables; KE5FX's table is the reproducible single-stroke
-// reference this project renders against (issue #31). Do not hand-edit - regenerate.
+// reference this project renders against. Do not hand-edit - regenerate.
 //
 // Mapping from the KE5FX 8x8 grid: x = COL (0..7); y = 6 - ROW (KE5FX ROW is Y-down with
 // the baseline at row 6, flipped to our Y-up baseline = 0, cap = 6, descenders to -1).
@@ -28,19 +28,23 @@ namespace Hpgl.Rendering
         public const double Em = 6.0;
 
         /// <summary>Cell advance in grid units. The fixed monospaced pitch is Advance/Em (= 1.375x) the
-        /// character width - the instrument-derived character-cell grid from #29/#30.</summary>
+        /// character width, which is the cell ratio of HP's built-in stick font: instruments lay
+        /// annotations on a character grid, placing each field with an absolute PA at an integer number
+        /// of cells, and the grid step is exactly 1.375x the SI/SR width. Matching it makes columns in
+        /// adjacent label rows line up. The ratio is dimensionless and holds at any character size.</summary>
         public const double Advance = 8.25;
 
         /// <summary>
         /// Returns the glyph for character <paramref name="c"/> in HP-GL character set <paramref name="set"/>
         /// as a list of pen-down polylines (grid units), or null if undrawn. Only Set 0 (ASCII) is
-        /// implemented; any other set currently falls back to the Set-0 glyph (see <see cref="IsImplemented"/>
-        /// - the typography analyzer flags those so a capture self-reports the gap, #56).
+        /// implemented; any other set currently falls back to the Set-0 glyph (see <see cref="IsImplemented"/>,
+        /// and <see cref="HpglRenderer.UnsupportedTypography"/>, which reports the substitution so a caller
+        /// need not discover it by eye).
         /// </summary>
         public static int[][] Get(char c, int set = 0)
         {
             int[][] g;
-            return Glyphs.TryGetValue(c, out g) ? g : null;   // set is ignored until non-ASCII sets land (#56)
+            return Glyphs.TryGetValue(c, out g) ? g : null;   // set is ignored until non-ASCII sets land
         }
 
         /// <summary>True if a glyph table exists for this HP-GL character set. Only Set 0 (ASCII) so far.</summary>

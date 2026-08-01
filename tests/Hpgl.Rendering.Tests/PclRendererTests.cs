@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-// Tests for the HP PCL raster decoder/renderer (issue #40).
+// Tests for the HP PCL raster decoder/renderer.
 //
 // The fixtures are built directly from the worked examples in HP's "PCL 5 Printer
 // Language Technical Reference Manual", Chapter 15 (Raster Graphics) - the same
@@ -220,7 +220,7 @@ namespace Hpgl.Rendering.Tests
             Assert.False(PclRenderer.LooksLikePcl(hpgl));
         }
 
-        // ---- real HP 8563E print dump (issue #40 bench fixture) -------------
+        // ---- real HP 8563E print dump (bench fixture) -----------------------
 
         private static string FixturePath(string name) =>
             Path.Combine(AppContext.BaseDirectory, "fixtures", name);
