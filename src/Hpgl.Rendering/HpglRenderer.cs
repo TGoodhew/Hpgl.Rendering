@@ -80,7 +80,8 @@ namespace Hpgl.Rendering
         /// Renders HP-GL/2 text to a self-contained SVG document (a string). The SVG uses the
         /// same auto-fit transform and pen palette as the raster path, but stays vector and
         /// compact (consecutive connected segments are merged into a single &lt;polyline&gt;).
-        /// This is the form that can be shown inline in a chat as an SVG artifact.
+        /// Use this when the output must stay resolution-independent; note that displaying an
+        /// SVG needs an SVG-capable viewer - see <see cref="RenderToBitmap"/> for a raster.
         /// </summary>
         public static string RenderToSvg(string hpgl, HpglRenderOptions options = null)
         {
@@ -122,12 +123,14 @@ namespace Hpgl.Rendering
             bytes == null ? string.Empty : Encoding.GetEncoding("ISO-8859-1").GetString(bytes);
 
         /// <summary>
-        /// #52: returns true if this plot contains a coordinate so far outside the rest of the geometry
-        /// that it would otherwise dominate the auto-fit and collapse the image (a transient corrupted /
-        /// concatenated coordinate from the GPIB read). The renderer already ignores such points when
-        /// fitting; this lets the capture tool detect the glitch, retry the capture, and ultimately notify
-        /// the user. <paramref name="detail"/> carries the excluded value(s) for the log.
+        /// Returns true if this plot contains a coordinate so far outside the rest of the geometry that it
+        /// would otherwise dominate the auto-fit and collapse the image - typically a corrupted or
+        /// concatenated coordinate from a capture taken over a real bus. Rendering already ignores such
+        /// points when fitting, so this is purely diagnostic: it lets a caller detect the glitch and retry
+        /// the capture rather than silently keep a degraded plot.
         /// </summary>
+        /// <param name="hpgl">The HP-GL/2 stream to inspect.</param>
+        /// <param name="detail">Receives the excluded value(s), suitable for a log message.</param>
         public static bool HasCorruptCoordinate(string hpgl, out string detail)
         {
             var measure = new MeasureSink();
@@ -136,13 +139,15 @@ namespace Hpgl.Rendering
         }
 
         /// <summary>
-        /// Typography diagnostic (#56): returns the distinct label characters / character sets in this
-        /// HP-GL that the renderer cannot draw faithfully - a printable code with no glyph in its active
-        /// set, or a non-zero (non-ASCII) character set we have no table for (so its text is drawn with the
-        /// ASCII fallback). Tracks CS/CA (designate), SS/SA and in-label shift-out/in (0x0E/0x0F) exactly as
-        /// the renderer does. Empty when everything renders correctly - so a capture self-reports the gap
-        /// before any alternate-set work is built out.
+        /// Typography diagnostic: returns the distinct label characters / character sets in this HP-GL that
+        /// the renderer cannot draw faithfully - a printable code with no glyph in its active set, or a
+        /// non-zero (non-ASCII) character set there is no table for (so its text is drawn with the ASCII
+        /// fallback). Tracks CS/CA (designate), SS/SA and in-label shift-out/in (0x0E/0x0F) exactly as the
+        /// renderer does. Empty when everything renders correctly, so a caller can report the gap instead
+        /// of shipping a plot with silently substituted glyphs.
         /// </summary>
+        /// <param name="hpgl">The HP-GL/2 stream to inspect.</param>
+        /// <returns>Distinct human-readable descriptions of each gap; empty if the stream renders faithfully.</returns>
         public static IReadOnlyList<string> UnsupportedTypography(string hpgl)
         {
             var gaps = new SortedSet<string>(StringComparer.Ordinal);
