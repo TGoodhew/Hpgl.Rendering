@@ -40,6 +40,14 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      # StrokeFont.cs is generated (see the file header). The generator needs the KE5FX
+      # renderer.cpp, which is proprietary and not on the runner, so we cannot regenerate
+      # here - but we can prove the committed file still matches the generator's HEADER/
+      # FOOTER scaffolding, which is where the two last drifted (#37). Python ships with
+      # windows-latest.
+      - name: Check generated StrokeFont.cs is not drifting from its generator
+        run: python tools/ke5fx_font/check_strokefont_drift.py
+
       - name: Restore
         run: |
           dotnet restore Hpgl.Rendering.sln
