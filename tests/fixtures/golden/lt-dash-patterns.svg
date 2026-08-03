@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 768">
+
+<rect width="1024" height="768" fill="#000000"/>
+
+<path fill="none" stroke="#FFFFFF" stroke-width="1" stroke-dasharray="10,41" d="M12,564 1012,564"/>
+
+<path fill="none" stroke="#FFFFFF" stroke-width="1" stroke-dasharray="17,34" d="M12,484 1012,484"/>
+
+<path fill="none" stroke="#FFFFFF" stroke-width="1" stroke-dasharray="26,26" d="M12,404 1012,404"/>
+
+<path fill="none" stroke="#FFFFFF" stroke-width="1" stroke-dasharray="34,17" d="M12,324 1012,324"/>
+
+<path fill="none" stroke="#FFFFFF" stroke-width="1" stroke-dasharray="24,12,4,12" d="M12,244 1012,244"/>
+
+<path fill="none" stroke="#FFFFFF" stroke-width="1" stroke-dasharray="18,9,3,9,3,9" d="M12,164 1012,164"/>
+
+<path fill="none" stroke="#FFFFFF" stroke-width="1" stroke-dasharray="15,15,5,15" d="M12,84 1012,84"/>
+
+<path fill="none" stroke="#FFFFFF" stroke-width="1" d="M12,684 1012,684"/>
+
+</svg>
