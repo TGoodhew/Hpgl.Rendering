@@ -44,6 +44,59 @@
     <InternalsVisibleTo Include="Hpgl.Rendering.Tests" />
   </ItemGroup>
 
+  <!--
+    The public surface is a contract once this is on nuget.org, so it is approved rather
+    than inferred: every public member must appear in PublicAPI.*.txt or the build fails
+    (RS0016), and every entry must correspond to a real public member or the build fails
+    (RS0017). Adding, removing or re-signing a member therefore cannot land without the
+    approval file changing in the same commit, which is what makes an API change show up
+    in review as a diff.
+
+    The two files are shared by BOTH target frameworks rather than split per-TFM, and that
+    is deliberate: a member present on net8.0-windows but not net472 fails one leg or the
+    other of the same build. Framework parity of the public surface is enforced as a
+    side effect, with no separate test to keep in step.
+
+    Everything currently sits in PublicAPI.Unshipped.txt because nothing has shipped -
+    there is no `v*` tag and no package. Publishing 1.0.0 moves those lines to
+    PublicAPI.Shipped.txt; after that, a line leaving Shipped is a breaking change.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" Version="5.6.0" PrivateAssets="all">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <AdditionalFiles Include="PublicAPI.Shipped.txt" />
+    <AdditionalFiles Include="PublicAPI.Unshipped.txt" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- These ship as warnings by default, which would let an unapproved API change land
+         on a green build. Escalated here rather than waiting for the repo-wide
+         warnings-as-errors in #12, because a warning does not satisfy "fails the build":
+           RS0016 a public member is missing from the approval files (added / re-signed)
+           RS0017 an approval entry has no matching public member (removed / renamed)
+           RS0024/RS0025 the approval files are malformed or contain duplicates -->
+    <WarningsAsErrors>$(WarningsAsErrors);RS0016;RS0017;RS0024;RS0025</WarningsAsErrors>
+
+    <!-- RS0026 - "do not add multiple overloads with optional parameters". The rule guards
+         against a later edit silently rebinding a call site. It does not apply to the two
+         pairs it flags here: `RenderToPng`/`RenderToSvg` overload on `string` vs `byte[]`,
+         which are disjoint, so no call site can be ambiguous between them. The alternative
+         is splitting them into four names, which contradicts the surface #30 deliberately
+         settled. Revisit if an overload ever gains a second optional parameter.
+
+         RS0041 - "uses some oblivious reference types". True, and not a defect to fix here:
+         this project is not nullable-aware yet, so every reference type is oblivious and
+         the rule fires on almost the whole surface. Enabling nullable annotations is #12's
+         scope. Remove this suppression when that lands - the approval files already carry
+         the `#nullable enable` header, so the `~` prefixes become real annotations at that
+         point and the resulting diff IS the review of what became non-nullable. -->
+    <NoWarn>$(NoWarn);RS0026;RS0041</NoWarn>
+  </PropertyGroup>
+
   <!-- Version is inferred from the nearest 'v*' git tag. -->
   <ItemGroup>
     <PackageReference Include="MinVer" Version="6.0.0" PrivateAssets="all" />
