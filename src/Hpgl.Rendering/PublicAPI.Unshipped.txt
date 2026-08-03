@@ -1,0 +1,46 @@
+#nullable enable
+Hpgl.Rendering.HpglBackground
+Hpgl.Rendering.HpglBackground.Black = 0 -> Hpgl.Rendering.HpglBackground
+Hpgl.Rendering.HpglBackground.White = 1 -> Hpgl.Rendering.HpglBackground
+Hpgl.Rendering.HpglRenderer
+~static Hpgl.Rendering.HpglRenderer.HasCorruptCoordinate(string hpgl, out string detail) -> bool
+~static Hpgl.Rendering.HpglRenderer.RenderToBitmap(string hpgl, Hpgl.Rendering.HpglRenderOptions options = null) -> System.Drawing.Bitmap
+~static Hpgl.Rendering.HpglRenderer.RenderToPng(byte[] hpglBytes, Hpgl.Rendering.HpglRenderOptions options = null) -> byte[]
+~static Hpgl.Rendering.HpglRenderer.RenderToPng(string hpgl, Hpgl.Rendering.HpglRenderOptions options = null) -> byte[]
+~static Hpgl.Rendering.HpglRenderer.RenderToSvg(byte[] hpglBytes, Hpgl.Rendering.HpglRenderOptions options = null) -> string
+~static Hpgl.Rendering.HpglRenderer.RenderToSvg(string hpgl, Hpgl.Rendering.HpglRenderOptions options = null) -> string
+~static Hpgl.Rendering.HpglRenderer.UnsupportedTypography(string hpgl) -> System.Collections.Generic.IReadOnlyList<string>
+Hpgl.Rendering.HpglRenderOptions
+Hpgl.Rendering.HpglRenderOptions.Antialias.get -> bool
+Hpgl.Rendering.HpglRenderOptions.Antialias.set -> void
+Hpgl.Rendering.HpglRenderOptions.Background.get -> Hpgl.Rendering.HpglBackground
+Hpgl.Rendering.HpglRenderOptions.Background.set -> void
+Hpgl.Rendering.HpglRenderOptions.Height.get -> int
+Hpgl.Rendering.HpglRenderOptions.Height.set -> void
+Hpgl.Rendering.HpglRenderOptions.HpglRenderOptions() -> void
+Hpgl.Rendering.HpglRenderOptions.LineWidthPx.get -> float
+Hpgl.Rendering.HpglRenderOptions.LineWidthPx.set -> void
+Hpgl.Rendering.HpglRenderOptions.Margin.get -> int
+Hpgl.Rendering.HpglRenderOptions.Margin.set -> void
+~Hpgl.Rendering.HpglRenderOptions.PenColors.get -> System.Drawing.Color[]
+~Hpgl.Rendering.HpglRenderOptions.PenColors.set -> void
+Hpgl.Rendering.HpglRenderOptions.SvgSimplifyTolerancePx.get -> double
+Hpgl.Rendering.HpglRenderOptions.SvgSimplifyTolerancePx.set -> void
+Hpgl.Rendering.HpglRenderOptions.SvgTextLabels.get -> bool
+Hpgl.Rendering.HpglRenderOptions.SvgTextLabels.set -> void
+Hpgl.Rendering.HpglRenderOptions.Width.get -> int
+Hpgl.Rendering.HpglRenderOptions.Width.set -> void
+Hpgl.Rendering.HpglTraceRepair
+~static Hpgl.Rendering.HpglTraceRepair.Repair(string hpgl, out int repaired) -> string
+~static Hpgl.Rendering.HpglTraceRepair.Repair(string hpgl) -> string
+Hpgl.Rendering.PclRasterRepair
+~static Hpgl.Rendering.PclRasterRepair.Repair(byte[] data, out int reframed) -> byte[]
+~static Hpgl.Rendering.PclRasterRepair.Repair(byte[] data) -> byte[]
+Hpgl.Rendering.PclRenderer
+~static Hpgl.Rendering.PclRenderer.LooksLikePcl(byte[] data) -> bool
+~static Hpgl.Rendering.PclRenderer.RenderToBitmap(byte[] pcl, Hpgl.Rendering.HpglRenderOptions options = null) -> System.Drawing.Bitmap
+~static Hpgl.Rendering.PclRenderer.RenderToPng(byte[] pcl, Hpgl.Rendering.HpglRenderOptions options = null) -> byte[]
+~static Hpgl.Rendering.PclRenderer.RenderToSvg(byte[] pcl, Hpgl.Rendering.HpglRenderOptions options = null) -> string
+Hpgl.Rendering.ScreenImage
+~static Hpgl.Rendering.ScreenImage.Dimensions(byte[] imageBytes, out int width, out int height) -> void
+~static Hpgl.Rendering.ScreenImage.ToPng(byte[] imageBytes) -> byte[]
