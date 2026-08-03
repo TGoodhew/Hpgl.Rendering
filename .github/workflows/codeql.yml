@@ -1,0 +1,68 @@
+name: CodeQL
+
+# `pull_request`, NOT `pull_request_target`: like CI, this workflow checks out and builds
+# the contributor's code, so it must run with the fork's read-only token and no access to
+# repository secrets. Do not "fix" this to that.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # A weekly run catches alerts from new queries shipped after the last commit landed -
+  # this library can sit untouched for weeks and still gain findings.
+  schedule:
+    - cron: '27 5 * * 1'
+
+# Least privilege. `security-events: write` is the one elevation CodeQL needs, to upload
+# the SARIF results; `actions: read` lets it read workflow run metadata on private repos.
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # No matrix: C# is the only compiled language here. A single job keeps the status-check
+  # context a plain `codeql`, which is what branch protection requires by name.
+  codeql:
+    runs-on: windows-latest
+
+    steps:
+      # Third-party actions are pinned to a full commit SHA, not a tag - see the note in
+      # ci.yml. Dependabot updates these SHAs and the trailing version comment.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Must satisfy global.json's SDK pin, exactly as in ci.yml. Without this the runner's
+      # preinstalled SDK is rejected and the manual build below fails before CodeQL sees
+      # a single compilation.
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: '10.0.x'
+
+      # `security-extended` rather than the default suite: this library parses untrusted
+      # binary input and does index arithmetic over byte buffers (the PCL raster decoder
+      # and the `PE` encoded-polyline path especially), which is where the extra queries
+      # earn their false-positive rate.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
+        with:
+          languages: csharp
+          build-mode: manual
+          queries: security-extended
+
+      # Manual build mode, not autobuild: this solution multi-targets net472 and
+      # net8.0-windows behind an SDK pin, and running the same commands CI already proves
+      # green is more predictable than letting autobuild infer them. Both target
+      # frameworks compile here, so CodeQL analyses both.
+      - name: Build
+        run: |
+          dotnet restore Hpgl.Rendering.sln
+          dotnet build Hpgl.Rendering.sln -c Release --no-restore
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
+        with:
+          category: '/language:csharp'
