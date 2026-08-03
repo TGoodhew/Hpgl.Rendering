@@ -49,4 +49,24 @@
     </Content>
   </ItemGroup>
 
+  <!-- Per-feature goldens: exact SVG snapshots plus the raster goldens for the paths
+       where the image is the output under test. Wildcarded so adding a golden is a
+       one-file change, not a two-file one. -->
+  <ItemGroup>
+    <Content Include="..\fixtures\golden\**\*" LinkBase="fixtures\golden">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\fixtures\corpus\**\*" LinkBase="fixtures\corpus">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!-- HPGL_REGEN_GOLDENS rewrites goldens in the SOURCE tree so the update is a
+       reviewable diff. AppContext.BaseDirectory points into bin/ and cannot be walked
+       back to the repository reliably, so the source path is baked in at build time. -->
+  <ItemGroup>
+    <AssemblyMetadata Include="GoldenSourceDir" Value="$(MSBuildThisFileDirectory)..\fixtures\golden" />
+    <AssemblyMetadata Include="CorpusSourceDir" Value="$(MSBuildThisFileDirectory)..\fixtures\corpus" />
+  </ItemGroup>
+
 </Project>
